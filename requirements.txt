@@ -1,0 +1,19 @@
+# Do not add torch/torchvision here: Colab ships a build matching its CUDA version.
+# For local work, install PyTorch first: https://pytorch.org/get-started/locally/
+
+# Core
+numpy
+pandas
+pillow
+tqdm
+
+# Models (DINOv3 support in transformers starts around 4.56)
+transformers>=4.56
+huggingface_hub
+
+# Diagnostics and logging
+matplotlib
+wandb
+
+# Data download
+kaggle

@@ -218,3 +218,14 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Project: data, runs and credentials stay out of git
+data/*
+!data/.gitkeep
+outputs/*
+!outputs/.gitkeep
+wandb/
+kaggle.json
+*.pt
+*.pth
+*.ckpt
