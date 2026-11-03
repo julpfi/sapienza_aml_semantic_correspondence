@@ -1,0 +1,10 @@
+# Local Miniconda environment. PyTorch is installed separately (see README), so the
+# CPU or CUDA build matches your machine.
+name: advance
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  - pip
+  - pip:
+      - -r requirements.txt

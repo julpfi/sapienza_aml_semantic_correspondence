@@ -15,5 +15,9 @@ huggingface_hub
 matplotlib
 wandb
 
+# Notebooks (local only; Colab and Kaggle already have these)
+ipykernel
+
 # Data download
 kaggle
+six  # needed by kaggle but not declared as its dependency

@@ -19,6 +19,7 @@ src/train.py        Training entry point
 src/evaluate.py     Validation predictions and PCK
 src/diagnostics.py  Plots and failure analysis
 src/predict.py      Submission file
+soco/, run.py       SOCO DINO-first pipeline (Lang branch), see .claude/pipeline.md
 data/               Competition data (not in git)
 outputs/<run_id>/   Config, checkpoints, predictions and submission (not in git)
 ```
@@ -47,13 +48,25 @@ to each person's own Google Drive, under `aml_semantic_correspondence/outputs`.
 
 ## Run locally
 
+Use a Miniconda environment called `advance`. Create it once:
+
 ```bash
-conda create -n aml python=3.11
-conda activate aml
-# Install PyTorch for your machine: https://pytorch.org/get-started/locally/
-pip install -r requirements.txt
+conda env create -f environment.yml
+conda activate advance
+# PyTorch for your machine (https://pytorch.org/get-started/locally/), for example:
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu    # CPU only
+# pip install torch torchvision --index-url https://download.pytorch.org/whl/cu128 # NVIDIA GPU
+```
+
+Then, in every new terminal:
+
+```bash
+conda activate advance
 python -m src.train --exp baseline --dry-run
 ```
+
+After `requirements.txt` changes, update the environment with
+`conda env update -n advance -f environment.yml`.
 
 ## Add an experiment
 
