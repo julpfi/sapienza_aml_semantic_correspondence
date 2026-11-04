@@ -25,7 +25,7 @@ The "run" files are what makes both of these possible.
 |---|---|---|---|
 | `run.py` | Python CLI | **The only entry point.** It parses `--mode/--run/--resume`, checks the files and the device (`preflight`), creates the run folder, builds the model and calls `train`, `evaluate` or `submit` | People, the notebooks |
 | `src/utils/run.py` | Library module | **Run folder logic:** `prepare_run_dir` creates or reopens `outputs/<run_id>/` and writes `config.json` once. `load_run_config` reloads a run's saved settings. `git_commit` records the code version (`-dirty` if there are uncommitted changes). `seed_everything` sets the seeds | `run.py`, `src/train.py` |
-| `RUN.md` | Guide | **How to run everything:** setup, the three modes, flags, local/Colab/Kaggle steps, troubleshooting | People |
+| `docs/RUN.md` | Guide | **How to run everything:** setup, the three modes, flags, local/Colab/Kaggle steps, troubleshooting | People |
 | `colab/run.ipynb` | Notebook | **Thin Colab runner.** One cell sets `BRANCH/MODE/RUN/RESUME`. Then it calls `scripts/colab_setup.py` and `python run.py ...`. It holds no logic | Teammates training on a GPU |
 | `notebooks/kaggle_run.ipynb` | Notebook | **Thin Kaggle runner (internet off).** It sets the weights folder and offline mode, then calls `python run.py --mode submit`. Kaggle uses the `submission.csv` it writes | Final submission |
 | `outputs/<run_id>/` | Generated folder (not in git) | **The record of one run:** `config.json` (always), then `summary.json`/`per_query.csv`/`per_category.csv`/`visual_check.png`, or `checkpoints/`/`history.json`, or `predictions.csv`/`submission.csv` | Everyone; `--run` and `--resume` reopen it |

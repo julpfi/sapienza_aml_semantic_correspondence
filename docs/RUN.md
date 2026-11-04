@@ -14,14 +14,15 @@ image ──► square resize 644 px ──► DINOv2-B/14 (frozen, facebook/din
       ──► 2× upsampling + 5×5 soft-argmax ──► (x, y) in original target pixels
 ```
 
-There is one configuration: `BASE` in `src/config.py`. As it stands it is the Lang pipeline
-(nothing trained, val PCK@0.10 = 40.4). To train, change these settings in `BASE`:
+There is one configuration: `BASE` in `src/config.py`. It is set up for fine-tuning on a Colab T4
+(`head="linear"`, `train_mode="finetune"`, last 2 DINOv2 blocks). Before training, the linear head is the
+identity, so `evaluate`/`submit` without `--run` give the Lang baseline (val PCK@0.10 = 40.4). A trained
+model is used with `--run <run_id>`. Every training choice and its reason: [PRD_finetuning.md](PRD_finetuning.md) section 6.
 
-| Settings in `BASE` | What is trained | Where to run |
-|---|---|---|
-| defaults (`head="none"`) | nothing (Lang baseline) | anywhere, CPU is fine |
-| `head="linear"` (or `"mlp"`) | a small head on frozen features (Phase 1) | GPU recommended |
-| `head="linear"`, `train_mode="finetune"` | head + last 2 DINOv2 blocks (Phase 2) | Colab GPU |
+| What | Where to run |
+|---|---|
+| `evaluate` / `submit` (baseline or `--run`) | anywhere; CPU works but takes ~1 h for validation |
+| `train` | Colab T4 (`--require-gpu` in the notebook) |
 
 Everything goes through one command: `python run.py --mode train|evaluate|submit`.
 
@@ -63,14 +64,18 @@ Every command creates (or reopens) one run folder `outputs/<run_id>/`. `<run_id>
 outputs/
   20261104-120000_evaluate/
     config.json        settings of this run
-    summary.json       PCK@0.05/0.10/0.15, score, counts
-    per_query.csv      one row per validation query (prediction, dist = error / L)
-    per_category.csv   PCK per category
-    visual_check.png   a few predictions drawn on the images
+    summary.json       PCK@0.05/0.10/0.15 (+95% interval), score, error mix, PCK and loss per group
+    per_query.csv      one row per validation query (prediction, dist = error / L, groups, error type)
+    per_group.csv      PCK per object size (small/medium/large), single/multi target, edge distance
+    error_types.csv    correct / near_miss / wrong_keypoint / far_miss / other_miss
+    sweep.csv          flip_test x soft_window x soft_temperature (x image_size x model): a report only
+    visual_check.png   the worst validation predictions
+    wandb/             local W&B files (charts are online at wandb.ai)
   20261104-130000_train/
     config.json
-    history.json       validation PCK after every epoch
+    history.json       validation PCK, loss and error mix after every epoch
     checkpoints/       last.pt (resume), best.pt (best validation PCK)
+    wandb/
   20261104-140000_submit/
     config.json
     predictions.csv    id,x,y
@@ -79,7 +84,7 @@ outputs/
 
 | Command | What it does | Writes in `outputs/<run_id>/` |
 |---|---|---|
-| `python run.py --mode evaluate` | Validation PCK on the held-out pairs, error breakdown, visual check | `summary.json`, `per_query.csv`, `per_category.csv`, `visual_check.png` |
+| `python run.py --mode evaluate` | Validation PCK on the held-out pairs, groups, error types, sweep, worst-case visual check, W&B | `summary.json`, `per_query.csv`, `per_group.csv`, `error_types.csv`, `sweep.csv`, `visual_check.png` |
 | `python run.py --mode train` | Train with the `BASE` settings (validation every epoch, best kept) | `history.json`, `checkpoints/last.pt`, `checkpoints/best.pt` |
 | `python run.py --mode train --resume <run_id>` | Continue a training run after a disconnect | same folder |
 | `python run.py --mode evaluate --run <run_id>` | Evaluate a trained run with its `best.pt` | evaluation files, in that run's folder |
@@ -99,9 +104,13 @@ and checks the files.
    python run.py --mode submit                    # or --run <run_id> for a trained model
    python scripts/kaggle_io.py submit --file outputs/<run_id>/submission.csv --message "baseline: val 40.4"
    ```
-4. **Train** when the training-free result is not enough: set `head="linear"` in `BASE`, then
-   `python run.py --mode train`, and on Colab also `train_mode="finetune"`. Evaluate and submit the
-   trained run with `--run <run_id>`.
+4. **Train** on Colab (section 5) with `MODE = "train"`. Evaluate and submit the trained run with
+   `--run <run_id>`. The order of runs and what to change between them: PRD_finetuning.md section 6.11.
+5. **Sweep:** `evaluate` writes `sweep.csv`. Copy a better setting into `BASE` by hand only if its gain
+   is larger than its 95% interval (`ci95`). The submission never reads `sweep.csv`.
+   For resolutions/ViT-L, fill `sweep_image_size` / `sweep_model_id` in `BASE` and run evaluate on the T4.
+6. **Check the augmentation** after changing an `aug_*` setting: `python scripts/check_augmentation.py`
+   (draws augmented pairs, and checks that no point is moved next to the border).
 
 Before every submission (CLAUDE.md): `submit` already checks that every id of
 `sample_submission.csv` appears exactly once, in order, with finite values, and it clips
@@ -126,12 +135,17 @@ What happens:
   `MyDrive/aml_semantic_correspondence/outputs/<run_id>`, so they survive a disconnect.
 - **After a disconnect:** set `RESUME = "<run_id>"` and run all cells again. Training continues
   from `last.pt` (weights, optimiser, scheduler, AMP scaler, epoch and batch position, random
-  state). For long epochs, set `checkpoint_every_steps=200` in `BASE` before starting.
+  state). `last.pt` is also saved every `checkpoint_every_steps` updates (150 by default).
 - The last cell can upload a `submission.csv` to Kaggle.
 
-Phase 2 settings (`head="linear"`, `train_mode="finetune"`, all in `src/config.py`): `unfreeze_blocks=2`,
-`lr_backbone=1e-5` and `lr_head=1e-4` (two parameter groups), AdamW wd 0.05, OneCycle with 5% warmup,
-fp16 AMP, `grad_accum_steps=1`, `batch_size=4`, `epochs=2`. The frozen blocks stay in eval mode.
+Training settings (all in `BASE`, reasons in PRD_finetuning.md section 6): last 2 blocks + final LayerNorm +
+identity-initialised linear head; `lr_backbone=1e-5` for the top block with `layer_decay=0.75` per block below,
+`lr_head=1e-4`; linear warmup (10% of updates) then cosine to 1%, set every update; AdamW, weight decay 0.05
+(not on LayerNorm/bias); fp16 AMP (the T4 has no bf16); `effective_batch=16`, with the micro-batch found by a
+GPU memory probe at start-up (`batch_size="auto"`) and gradient accumulation for the rest; 7 epochs with early
+stop after 3 epochs without a better val PCK; flip, crop, rotation, colour, grayscale and blur augmentation.
+The W&B run shows loss (overall, per object size, single/multi target), learning rate per block, batch sizes,
+gradient norm, AMP scale, softmax entropy, GPU memory, and every validation metric per epoch.
 
 Push your code to the branch before running it: Colab pulls from GitHub, and edits made in Colab are lost.
 
@@ -162,7 +176,9 @@ All settings are in `BASE` in `src/config.py`, with a comment on where each valu
 | Problem | Fix |
 |---|---|
 | `Missing .../train.csv` | `python scripts/kaggle_io.py download` (rules accepted? keys in `.env`?) |
-| `Nothing to train: head='none'` | The baseline has nothing to train: set `head="linear"` in `BASE` (and `train_mode="finetune"` for Phase 2) |
+| `Nothing to train: head='none'` | Set `head="linear"` in `BASE` (it is the default) |
+| `Even a micro-batch of 1 does not fit the GPU` | Lower `image_size` or `unfreeze_blocks`, or set `batch_size` to an int |
+| `fused attention kernels unavailable` | Attention falls back to a slower, memory-hungry kernel: keep `attn_implementation="sdpa"` and fp16 (`amp=True`) |
 | `image_size ... multiple of the patch size` | Use a multiple of 14: 448, 518, 644, 756, 840 |
 | W&B asks to log in | Set `WANDB_API_KEY`, or `wandb_mode="offline"` / `"disabled"` in `BASE` |
 | Colab lost the session | `RESUME = "<run_id>"` in the notebook and run again |

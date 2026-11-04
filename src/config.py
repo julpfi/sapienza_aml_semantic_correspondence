@@ -93,7 +93,7 @@ BASE = {
         "src_y": "source_y",
         "trg_xys": "target_points",    # JSON list of accepted [x, y] targets
         "scale": "scale",              # object size L used by PCK
-        "category": "category",        # optional; "all" when the column is missing
+        "category": "category",        # not in the challenge data (checked 2026-11-04): everything is "all"
     },
 
     # --- Reproducibility (Lang values) ---
@@ -123,8 +123,11 @@ BASE = {
     "image_size": 644,                 # square input; multiple of the patch size (14). Lang submission: 644
     "image_mean": [0.485, 0.456, 0.406],
     "image_std": [0.229, 0.224, 0.225],
-    "head": "none",                    # "none" (identity, = Lang) | "linear" | "mlp" (needed to train)
-    "head_dim": 768,                   # output size of the "linear" head
+    "attn_implementation": "sdpa",     # transformers attention; "sdpa" uses the memory-efficient kernel on a T4
+    # An untrained "linear"/"mlp" head is the identity, so these defaults give the Lang baseline until
+    # a trained best.pt is loaded with --run (docs/PRD_finetuning.md section 1).
+    "head": "linear",                  # "none" (identity, = Lang) | "linear" | "mlp" (needed to train)
+    "head_dim": None,                  # output size of the "linear" head; None = backbone width (identity start)
 
     # --- Matching (Lang) ---
     "matcher": "soft_window",          # "argmax" | "soft_window"
@@ -135,30 +138,66 @@ BASE = {
     "feature_cache_size": 256,         # images kept in memory during inference
     "cache_features_to_disk": False,   # frozen mode only: store backbone features in features_dir
 
-    # --- Training ---
-    "train_mode": "frozen",            # "frozen" (train the head) | "finetune" (head + last blocks)
-    "unfreeze_blocks": 2,              # finetune mode; Lang ft_unfreeze_blocks
-    "batch_size": 4,                   # Lang ft_batch_size (main had 8)
-    "epochs": 2,                       # Lang ft_epochs (main had 10)
-    "lr_head": 1e-4,                   # main lr
-    "lr_backbone": 1e-5,               # Lang ft_lr
-    "weight_decay": 0.05,              # Lang
-    "warmup_pct": 0.05,                # Lang OneCycle pct_start
+    # --- Training (docs/PRD_finetuning.md section 6; Colab T4) ---
+    "train_mode": "finetune",          # "frozen" (train the head) | "finetune" (head + last blocks)
+    "unfreeze_blocks": 2,              # ViT-B: 2 (try 1, 3); ViT-L: 4. 2 was best on SPair-71k (PRD 6.5)
+    "batch_size": "auto",              # micro-batch: "auto" = largest that fits the GPU x 0.85, or an int
+    "effective_batch": 16,             # batch seen by the optimiser (micro-batch x accumulation steps)
+    "effective_batch_schedule": None,  # optional ramp {from_epoch: effective_batch}, e.g. {0: 8, 3: 16}
+    "epochs": 7,                       # ~900 updates at batch 16 on ~2,040 training queries
+    "early_stop_patience": 3,          # stop after this many epochs without a better val PCK; 0 = never
+    "lr_head": 1e-4,                   # 10x the backbone: the head is small and starts as the identity
+    "lr_backbone": 1e-5,               # top trained block; try 5e-6 / 2e-5 (PRD 6.3)
+    "layer_decay": 0.75,               # block i from the top gets lr_backbone * layer_decay**i (BEiT/MAE: 0.65-0.8)
+    "lr_schedule": "cosine",           # "cosine" (linear warmup + cosine) | "constant" (warmup + constant)
+    "warmup_pct": 0.10,                # share of all updates used for the linear warmup
+    "min_warmup_steps": 30,
+    "min_lr_ratio": 0.01,              # cosine ends at this fraction of the peak lr
+    "weight_decay": 0.05,              # Lang; never applied to LayerNorm weights and biases
     "grad_clip": 1.0,                  # Lang
-    "grad_accum_steps": 1,
-    "amp": True,                       # fp16 autocast on CUDA (ignored on CPU)
-    "loss_temperature": 0.03,          # Lang ft_temperature
+    "amp": True,                       # fp16 autocast + GradScaler on CUDA (the T4 has no bf16); ignored on CPU
+    "loss_temperature": 0.03,          # Lang ft_temperature; try 0.02 / 0.05
     "label_sigma": 1.0,                # Gaussian label width in patches (0 = one-hot); Lang ft_label_sigma
-    "flip_augment": True,              # Lang ft_pair_flip_aug
-    "flip_augment_prob": 0.5,
-    "checkpoint_every_steps": 0,       # 0 = only at the end of each epoch
+    "checkpoint_every_steps": 150,     # last.pt every N updates (~10 min of ViT-B on a T4); 0 = end of epoch only
     "val_every_epoch": True,
+    "train_group_bins": [100.0, 300.0],  # object size L (px) limits of the small / medium / large groups
+
+    # --- Augmentation (train only; source and target images are augmented separately) ---
+    "flip_augment": True,              # Lang ft_pair_flip_aug (both images, keeps left/right consistent)
+    "flip_augment_prob": 0.5,
+    "aug_rotation_deg": 15.0,          # max rotation; 0 = off
+    "aug_rotation_prob": 0.5,
+    "aug_color_jitter": 0.3,           # brightness / contrast / saturation strength; 0 = off
+    "aug_hue_jitter": 0.05,
+    "aug_color_prob": 0.8,
+    "aug_grayscale_prob": 0.1,
+    "aug_crop_scale": [0.7, 1.0],      # random crop side as a fraction of the image side
+    "aug_crop_prob": 0.5,
+    "aug_blur_prob": 0.1,
+    "aug_edge_margin": 14,             # px in resized space: points closer to the border reject the augmentation
+    "aug_max_tries": 3,
+    "label_jitter": 0.5,               # std of the noise on target labels, in patches (GeoAware-SC); 0 = off
 
     # --- Evaluation ---
     "pck_alpha": 0.1,                  # competition metric: PCK@0.10
     "pck_alphas_report": [0.05, 0.1, 0.15],
     "pck_strict": True,                # correct when d / L < alpha (Lang notebook)
-    "n_visual_checks": 4,              # queries drawn by diagnostics after evaluate
+    "n_visual_checks": 8,              # worst validation queries drawn after evaluate
+    "near_miss_factor": 2.0,           # near miss: alpha <= d/L < factor * alpha
+    "far_miss_dist": 0.5,              # far miss: d/L above this
+    "edge_bins": [0.05, 0.15],         # distance of the nearest target to the image border / L
+    "wandb_evaluate": True,            # also log evaluate runs to W&B (job type "evaluate")
+
+    # --- Sweeps (evaluate only; a report, never used by the submission). Empty list = skip. ---
+    # Features are computed once per (model_id, image_size) and reused for all matching settings.
+    "sweep_flip_test": [False, True],
+    "sweep_soft_window": [3, 5, 7, 9, 11],
+    "sweep_soft_temperature": [0.02, 0.04],
+    "sweep_image_size": [],            # e.g. [644, 756, 840, 952] (multiples of 14); [] = image_size only
+    "sweep_model_id": [],              # e.g. ["facebook/dinov2-base", "facebook/dinov2-large"]; [] = model_id only
+    "sweep_model_revisions": {         # pinned Hub commits of the other sweep models (model_id uses model_revision)
+        "facebook/dinov2-large": "47b73eefe95e8d44ec3623f8890bd894b6ea2d6c",  # Hub commit, checked 2026-11-04
+    },
 
     # --- Submission (Lang / CLAUDE.md format) ---
     "submission_columns": ["id", "prediction"],

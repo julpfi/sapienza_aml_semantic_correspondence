@@ -34,10 +34,14 @@ def locate(sim, image_size, matcher, window, temperature):
     # Windowed soft-argmax: sub-cell refinement that is not pulled by distant look-alikes.
     half = window // 2
     offsets = torch.arange(-half, half + 1, device=sim.device)
-    rows = (row[:, None] + offsets[None]).clamp(0, h - 1)  # [K, win]
-    cols = (col[:, None] + offsets[None]).clamp(0, w - 1)
+    raw_rows, raw_cols = row[:, None] + offsets[None], col[:, None] + offsets[None]  # [K, win]
+    rows, cols = raw_rows.clamp(0, h - 1), raw_cols.clamp(0, w - 1)
     patch = sim[torch.arange(n)[:, None, None], rows[:, :, None], cols[:, None, :]]  # [K, win, win]
-    weights = torch.softmax(patch.reshape(n, -1) / temperature, -1).reshape(n, len(offsets), len(offsets))
+    # Cells outside the map get weight 0. Clamping alone would repeat the border cell and pull
+    # predictions towards the image edge (docs/PRD_finetuning.md section 3.1).
+    inside = ((raw_rows >= 0) & (raw_rows < h))[:, :, None] & ((raw_cols >= 0) & (raw_cols < w))[:, None, :]
+    logits = (patch / temperature).masked_fill(~inside, float("-inf"))
+    weights = torch.softmax(logits.reshape(n, -1), -1).reshape(n, len(offsets), len(offsets))
     x = (weights.sum(1) * cx[cols]).sum(-1)
     y = (weights.sum(2) * cy[rows]).sum(-1)
     return torch.stack([x, y], -1)
@@ -48,6 +52,13 @@ def alignment_score(src_feats, trg_feats):
     a = src_feats.flatten(1).T
     b = trg_feats.flatten(1)
     return (a @ b).max(-1).values.mean().item()
+
+
+def choose_source(src_feats, src_flip_feats, trg_feats):
+    """Flip test: keep the mirrored source if it aligns better with the target. Returns (feats, flipped)."""
+    if src_flip_feats is not None and alignment_score(src_flip_feats, trg_feats) > alignment_score(src_feats, trg_feats):
+        return src_flip_feats, True
+    return src_feats, False
 
 
 def predict_from_features(src_feats, trg_feats, src_xy, src_wh, trg_wh, cfg, flipped=False):

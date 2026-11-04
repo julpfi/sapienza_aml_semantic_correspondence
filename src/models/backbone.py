@@ -55,10 +55,11 @@ class DinoBackbone(nn.Module):
 
         self.feature_layer = cfg["feature_layer"]
         local_dir = local_model_dir(cfg)
+        attn = {"attn_implementation": cfg["attn_implementation"]} if cfg.get("attn_implementation") else {}
         if local_dir.is_dir():
-            self.model = AutoModel.from_pretrained(local_dir)
+            self.model = AutoModel.from_pretrained(local_dir, **attn)
         else:
-            self.model = AutoModel.from_pretrained(cfg["model_id"], revision=cfg["model_revision"])
+            self.model = AutoModel.from_pretrained(cfg["model_id"], revision=cfg["model_revision"], **attn)
         config = self.model.config
         self.patch_size = config.patch_size
         self.num_registers = int(getattr(config, "num_register_tokens", 0) or 0)

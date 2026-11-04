@@ -31,9 +31,15 @@ def target_distribution(trg_xys_resized, h, w, image_size, sigma, device):
 
 
 def matching_loss(src_feats, trg_feats, src_xy_resized, trg_xys_resized, image_size, temperature, sigma):
-    """src_feats, trg_feats [C, h, w]; src_xy_resized [1, 2]; trg_xys_resized [N, 2]."""
+    """src_feats, trg_feats [C, h, w]; src_xy_resized [1, 2]; trg_xys_resized [N, 2].
+
+    Returns (loss, entropy): entropy of the predicted distribution over the cells (detached), which
+    falls when the matching gets sharper.
+    """
     _, h, w = trg_feats.shape
     query = sample_point_features(src_feats, src_xy_resized.to(src_feats.device), image_size)  # [1, C]
     logits = (query @ trg_feats.flatten(1)) / temperature  # [1, h*w]
     target = target_distribution(trg_xys_resized, h, w, image_size, sigma, trg_feats.device)
-    return -(target[None] * F.log_softmax(logits, -1)).sum(-1).mean()
+    log_probs = F.log_softmax(logits, -1)
+    entropy = -(log_probs.exp() * log_probs).sum(-1).mean().detach()
+    return -(target[None] * log_probs).sum(-1).mean(), entropy

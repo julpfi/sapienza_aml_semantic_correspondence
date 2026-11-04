@@ -4,8 +4,9 @@ Our code for the [AML Challenge](https://www.kaggle.com/competitions/aml-challen
 given a source image, a target image and a source point, predict the corresponding point in the
 target image. The score is PCK@0.10.
 
-**How to run everything: [RUN.md](RUN.md).** What changed in the reorganization:
-[docs/REORGANIZATION.md](docs/REORGANIZATION.md). Decisions: [docs/decisions.md](docs/decisions.md).
+**How to run everything: [docs/RUN.md](docs/RUN.md).** Fine-tuning plan and hyperparameter choices:
+[docs/PRD_finetuning.md](docs/PRD_finetuning.md). What changed in the reorganization:
+[docs/REORGANIZATION.md](docs/REORGANIZATION.md).
 
 ## Structure
 
@@ -15,18 +16,20 @@ environment.yml     Dependencies (conda env `advance`)
 .env.example        Secret names; copy to .env (ignored by git)
 src/config.py       The only configuration (BASE) and runtime paths (local / Colab / Kaggle)
 src/models/         DINOv2 backbone (Hugging Face), head, matching, loss
-src/train.py        Training: frozen backbone + head, or fine-tuning (Phase 2)
-src/evaluate.py     Validation PCK
+src/train.py        Training: fine-tuning the last blocks + head (T4: auto batch, warmup+cosine, layer decay)
+src/augment.py      Training augmentation (flip, crop, rotation, colour) with the edge rule
+src/evaluate.py     Validation PCK report (groups, error types)
+src/sweep.py        Evaluation sweep: matching settings x image_size x model (report only)
 src/predict.py      Test predictions and submission file
-src/diagnostics.py  Error breakdown, visual check
-src/metrics.py      PCK@0.10
-src/utils/          Run folders, checkpoints, secrets, feature cache
+src/diagnostics.py  Worst-case visual check, W&B evaluation logging
+src/metrics.py      PCK@0.10, groups, error types
+src/utils/          Run folders, checkpoints, secrets, feature cache, GPU batch probe, W&B
 data/               Dataset code (+ data/raw/ for the download, not in git); see data/README.md
 splits/             Shared validation split, tracked in git
-scripts/            Colab setup, weight download, Kaggle download/submit
+scripts/            Colab setup, weight download, Kaggle download/submit, augmentation check
 colab/run.ipynb     Thin Colab runner
 notebooks/          Thin Kaggle runner (offline)
-docs/               Reorganization guide, decision log, Lang reference results
+docs/               RUN.md, PRD_finetuning.md, reorganization guide
 outputs/<run_id>/   One folder per run: config.json + results (not in git), see RUN.md
 ```
 
@@ -56,8 +59,8 @@ to each person's own Google Drive, under `aml_semantic_correspondence/outputs`.
 
 ## Settings
 
-There is one configuration: `BASE` in `src/config.py`. To change a setting (for example
-`head="linear"` to train a head), edit it there and start a new run. Every run saves the full
+There is one configuration: `BASE` in `src/config.py`. To change a setting, edit it there and
+start a new run. Every run saves the full
 settings it used in `outputs/<run_id>/config.json`.
 
 ## Checkpoints

@@ -53,6 +53,26 @@ def install():
     run([sys.executable, "-m", "pip", "install", "-q", *pip_requirements()])
 
 
+def version_check():
+    """Print installed vs environment.yml versions. Colab keeps its own torch on purpose (pip, not
+    Miniconda: docs/PRD_finetuning.md section 8), so a torch difference is expected, others are not."""
+    from importlib.metadata import PackageNotFoundError, version
+
+    import yaml
+
+    env = yaml.safe_load((REPO_ROOT / "environment.yml").read_text())
+    pip_list = next(d["pip"] for d in env["dependencies"] if isinstance(d, dict) and "pip" in d)
+    print(f"{'package':<18}{'environment.yml':<18}installed")
+    for req in pip_list:
+        name, _, pinned = req.partition("==")
+        try:
+            installed = version(name)
+        except PackageNotFoundError:
+            installed = "missing"
+        note = "" if installed == pinned or name in SKIP_ON_COLAB else "  <- differs"
+        print(f"{name:<18}{pinned:<18}{installed}{note}")
+
+
 def load_colab_secrets():
     sys.path.insert(0, str(REPO_ROOT))
     from src.utils.env import load_secrets
@@ -85,6 +105,7 @@ def main(argv=None):
         pull(args.branch)
     if not args.no_install:
         install()
+    version_check()
     load_colab_secrets()
     if not args.no_drive:
         mount_drive()

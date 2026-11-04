@@ -3,7 +3,7 @@
 The `v1` branch merged main (project structure) and Lang (the working Kaggle pipeline) without
 integrating them. This branch turns them into one codebase. It uses main's layout, Lang's logic
 and results, and is ready for fine-tuning on Colab (Phase 2).
-Plan and decisions: [PRD_reorganization.md](PRD_reorganization.md). Commands: [../RUN.md](../RUN.md).
+Commands: [RUN.md](RUN.md). Fine-tuning plan: [PRD_finetuning.md](PRD_finetuning.md).
 
 ## Final structure
 
@@ -11,7 +11,6 @@ Plan and decisions: [PRD_reorganization.md](PRD_reorganization.md). Commands: [.
 run.py                      single entry point: --mode train | evaluate | submit
 environment.yml             the only dependency file (conda env `advance`)
 .env.example                secret names; copy to .env (ignored)
-RUN.md                      how to run everything (local, Colab, Kaggle)
 
 src/
   config.py                 the only configuration (BASE), runtime detection and paths
@@ -47,11 +46,10 @@ scripts/
 colab/run.ipynb             thin Colab runner
 notebooks/kaggle_run.ipynb  thin offline Kaggle runner
 docs/
-  PRD_reorganization.md     plan and decisions
   REORGANIZATION.md         this guide
-  decisions.md              decision log
+  RUN.md                    how to run everything
+  PRD_finetuning.md         fine-tuning plan and hyperparameter choices
   run_explanation.md        why there are several "run" files
-  reference/lang_first_run/ Lang's first-run results (reference for checks)
 ```
 
 ## What moved where
@@ -76,7 +74,7 @@ docs/
 | `notebooks/soco_kaggle.ipynb` (Lang) | `notebooks/kaggle_run.ipynb` | Thin; logic moved to code |
 | `colab/run.ipynb` (main) | `colab/run.ipynb` | Calls `colab_setup.py` and `run.py` |
 | `requirements.txt` (both) | `environment.yml` | Deleted; all packages pinned in the env file |
-| `outputs_first_run/`, `__results___17_0.png` (Lang) | `docs/reference/lang_first_run/` | `.DS_Store` and `test_adapted.csv` removed |
+| `outputs_first_run/`, `__results___17_0.png` (Lang) | (deleted) | Lang reference results; the val score 40.4 is the reference |
 
 Renamed settings (old → new): `backbone`/`model`/`hub_repo`/`weights_path` → `model_id` (+ `model_revision`),
 `img_size` → `image_size`, `layer` → `feature_layer`, `ft_lr` → `lr_backbone`, `lr` → `lr_head`,
@@ -98,7 +96,7 @@ Checked on 2026-11-03 (scripts run against Lang's code exported from `v1`):
   notebook) and `run.py --mode submit` give the **same submission file**: identical ids,
   order and prediction strings, max difference 0.0 px.
 - **Validation split:** same algorithm and seeds as Lang's notebook. On the real data it gives the 453 ids
-  in `docs/reference/lang_first_run/stage1_best/per_keypoint.csv` (checked before the test suite was removed, D-004).
+  of Lang's first run (checked before the test suite and the reference files were removed).
 
 ## Environment
 
@@ -107,7 +105,7 @@ conda env create -f environment.yml && conda activate advance   # local
 ```
 
 Colab does not use conda: `scripts/colab_setup.py` pip-installs the `pip:` list of
-`environment.yml` and keeps Colab's CUDA torch. Details and every command: [../RUN.md](../RUN.md).
+`environment.yml` and keeps Colab's CUDA torch. Details and every command: [RUN.md](RUN.md).
 
 ## Behaviour changes to know about
 

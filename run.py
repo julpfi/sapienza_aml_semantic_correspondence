@@ -115,14 +115,29 @@ def main(argv=None):
 
     if args.mode == "evaluate":
         from data.datasets import build_dataset
-        from src.diagnostics import error_breakdown, plot_predictions
+        from src.diagnostics import log_evaluation, plot_predictions, worst_queries
         from src.evaluate import evaluate
+        from src.models.matching import FeatureCache
+        from src.sweep import describe, run_sweep
+        from src.utils.wandb_log import init_wandb
 
-        _, meter = evaluate(cfg, model, run_dir, "val")
-        print(json.dumps(error_breakdown(meter.frame(), cfg["pck_alpha"]), indent=2))
-        png = plot_predictions(cfg, model, build_dataset(cfg, "val"), run_dir / "visual_check.png",
-                               cfg["n_visual_checks"])
-        print(f"Visual check: {png}")
+        # One cache for evaluate and the sweep: the sweep reuses the features of the current setting.
+        cache = FeatureCache(max(cfg["feature_cache_size"], 4096))
+        summary, meter = evaluate(cfg, model, run_dir, cache=cache)
+        print(meter.per_group().to_string(index=False))
+        print(meter.error_types().to_string())
+        sweep = run_sweep(cfg, model, device, cache=cache)
+        if sweep is not None:
+            sweep.to_csv(run_dir / "sweep.csv", index=False)
+            print(describe(sweep, cfg))
+        png = run_dir / "visual_check.png"
+        figure = plot_predictions(cfg, model, build_dataset(cfg, "val"),
+                                  worst_queries(meter.frame(), cfg["n_visual_checks"]), png)
+        print(f"Visual check (worst queries): {png}")
+        wandb_run = init_wandb(cfg, run_id, run_dir, job_type="evaluate") if cfg["wandb_evaluate"] else None
+        log_evaluation(wandb_run, summary, meter, figure=figure, sweep=sweep)
+        if wandb_run:
+            wandb_run.finish()
         return 0
 
     from src.predict import check_submission, predict, write_submission

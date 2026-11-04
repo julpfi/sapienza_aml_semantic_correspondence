@@ -1,45 +1,63 @@
-"""Analyse validation results: error breakdown and a visual check of a few predictions."""
+"""Visual check of the worst validation predictions and the evaluation report on W&B."""
 
 from pathlib import Path
 
-
-def error_breakdown(per_query, alpha):
-    """Where the errors are: near misses (alpha..2*alpha) and far misses (> 0.5)."""
-    dist = per_query["dist"]
-    return {
-        "median_dist": float(dist.median()),
-        "near_miss_pct": 100 * float(((dist >= alpha) & (dist < 2 * alpha)).mean()),
-        "far_miss_pct": 100 * float((dist > 0.5).mean()),
-    }
+import numpy as np
 
 
-def plot_predictions(cfg, model, dataset, out_png, n=4):
-    """Draw source query, accepted targets and prediction for the first n queries."""
+def worst_queries(frame, n):
+    """query_ids of the n largest errors (d/L)."""
+    return frame.sort_values("dist", ascending=False)["query_id"].head(n).tolist()
+
+
+def plot_predictions(cfg, model, dataset, query_ids, out_png=None):
+    """Draw source query, accepted targets and prediction for the given queries. Returns the figure."""
     import matplotlib
 
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
-    n = min(n, len(dataset))
-    if n == 0:
+    index = {qid: i for i, qid in enumerate(dataset.df[cfg["csv_columns"]["query_id"]].astype(str))}
+    query_ids = [q for q in query_ids if q in index]
+    if not query_ids:
         return None
-    fig, axes = plt.subplots(n, 2, figsize=(10, 4 * n), squeeze=False)
-    for i in range(n):
-        s = dataset[i]
+    fig, axes = plt.subplots(len(query_ids), 2, figsize=(10, 4 * len(query_ids)), squeeze=False)
+    for row, qid in enumerate(query_ids):
+        s = dataset[index[qid]]
         pred_xy, _ = model.predict(s, cfg)
-        axes[i, 0].imshow(s["src_img"])
-        axes[i, 0].scatter([s["src_xy"][0]], [s["src_xy"][1]], c="red", s=60)
-        axes[i, 0].set_title(f"{s['query_id']}: source query")
-        axes[i, 1].imshow(s["trg_img"])
+        dist = np.linalg.norm(s["trg_xys"] - pred_xy, axis=1).min() / s["scale"] if s["trg_xys"] is not None else None
+        axes[row, 0].imshow(s["src_img"])
+        axes[row, 0].scatter([s["src_xy"][0]], [s["src_xy"][1]], c="red", s=60)
+        axes[row, 0].set_title(f"{qid}: source query")
+        axes[row, 1].imshow(s["trg_img"])
         if s["trg_xys"] is not None:
-            axes[i, 1].scatter(s["trg_xys"][:, 0], s["trg_xys"][:, 1], c="lime", s=60, label="accepted")
-        axes[i, 1].scatter([pred_xy[0]], [pred_xy[1]], c="red", marker="x", s=100, label="prediction")
-        axes[i, 1].legend(loc="lower right")
-        axes[i, 1].set_title("target")
-        for ax in axes[i]:
+            axes[row, 1].scatter(s["trg_xys"][:, 0], s["trg_xys"][:, 1], c="lime", s=60, label="accepted")
+        axes[row, 1].scatter([pred_xy[0]], [pred_xy[1]], c="red", marker="x", s=100, label="prediction")
+        axes[row, 1].legend(loc="lower right")
+        axes[row, 1].set_title("target" + (f"  d/L = {dist:.2f}" if dist is not None else ""))
+        for ax in axes[row]:
             ax.axis("off")
     fig.tight_layout()
-    Path(out_png).parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(out_png, dpi=80)
-    plt.close(fig)
-    return out_png
+    if out_png is not None:
+        Path(out_png).parent.mkdir(parents=True, exist_ok=True)
+        fig.savefig(out_png, dpi=80)
+    return fig
+
+
+def log_evaluation(wandb_run, summary, meter, prefix="val", step=None, figure=None, sweep=None):
+    """Log one evaluation to W&B: scalars, group table, error types, worst predictions, sweep table."""
+    if wandb_run is None:
+        return
+    import wandb
+
+    data = {f"{prefix}/{k}": v for k, v in summary.items() if isinstance(v, (int, float))}
+    data[f"{prefix}/per_group"] = wandb.Table(dataframe=meter.per_group().fillna(0))
+    errors = meter.error_types().reset_index(names="error_type")
+    data[f"{prefix}/error_types"] = wandb.plot.bar(wandb.Table(dataframe=errors), "error_type", "n_queries",
+                                                    title="Error types")
+    data[f"{prefix}/dist_hist"] = wandb.Histogram(np.clip(meter.frame()["dist"].to_numpy(), 0, 1))
+    if figure is not None:
+        data[f"{prefix}/worst_predictions"] = wandb.Image(figure)
+    if sweep is not None and len(sweep):
+        data[f"{prefix}/sweep"] = wandb.Table(dataframe=sweep)
+    wandb_run.log(data, step=step)
