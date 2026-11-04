@@ -1,5 +1,12 @@
-# Local Miniconda environment. PyTorch is installed separately (see README), so the
-# CPU or CUDA build matches your machine.
+# The only dependency file of the project. Versions are pinned to the set tested on 2026-11-03.
+#
+# Local:  conda env create -f environment.yml && conda activate advance
+#         (update after a change: conda env update -n advance -f environment.yml --prune)
+#         pip installs the default torch build: CUDA on Linux/Windows, CPU/MPS on macOS.
+#         CPU-only Linux machine (smaller download), after creating the env:
+#           pip install torch==2.15.0 torchvision==0.29.2 --index-url https://download.pytorch.org/whl/cpu
+# Colab:  no conda. scripts/colab_setup.py pip-installs the list below, except torch and
+#         torchvision (Colab ships CUDA builds of them).
 name: advance
 channels:
   - conda-forge
@@ -7,4 +14,25 @@ dependencies:
   - python=3.11
   - pip
   - pip:
-      - -r requirements.txt
+      # Deep learning (never reinstalled on Colab)
+      - torch==2.15.0
+      - torchvision==0.29.2
+      # Models: DINOv2 from Hugging Face
+      - transformers==5.22.1
+      - huggingface_hub==2.4.0
+      # Data
+      - numpy==2.4.6
+      - pandas==3.1.0
+      - pillow==13.0.0
+      - tqdm==4.70.1
+      # Diagnostics and logging
+      - matplotlib==3.11.2
+      - wandb==0.31.0
+      # Data download and submission (six is needed by kaggle but not declared by it)
+      - kaggle==2.2.5
+      - six==1.17.0
+      # Secrets and config
+      - python-dotenv==1.2.4
+      - pyyaml==6.0.3
+      # Notebooks
+      - ipykernel==7.4.0

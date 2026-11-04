@@ -219,13 +219,17 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 
-# Project: data, runs and credentials stay out of git
-data/*
-!data/.gitkeep
-outputs/*
-!outputs/.gitkeep
+# Project: data, weights, runs and secrets stay out of git
+.env
+data/raw/
+data/features/
+weights/
+outputs/
+checkpoints/
 wandb/
 kaggle.json
 *.pt
 *.pth
 *.ckpt
+.DS_Store
+condaenv.*.requirements.txt

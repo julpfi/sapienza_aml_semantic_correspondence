@@ -1,0 +1,5 @@
+# Store text files with LF line endings (the repo is edited on Windows, WSL, macOS and Colab).
+* text=auto eol=lf
+*.png binary
+*.jpg binary
+*.jpeg binary
