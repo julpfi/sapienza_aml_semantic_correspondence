@@ -40,27 +40,75 @@ def _to_resized(kps, wh, S):
     k[:, 1] *= S / wh[1]
     return k
 
+def positive_patch_mask(targets, target_wh, grid_hw, *, device,
+                        radius_patches=1.0):
+    """Union of patch neighborhoods; include the nearest cell for EACH target.
 
-def matching_loss(fs, ft, src_k, trg_k, S, tau, sigma):
-    """fs, ft [C,h,w] ; src_k, trg_k [K,2] resized coords."""
-    C, h, w = ft.shape
-    q = sample_features(fs, src_k.to(fs.device), S)                  # [K,C]
-    logits = (q @ ft.flatten(1)) / tau                               # [K,h*w]
-    cx, cy = cell_centers(w, S, ft.device), cell_centers(h, S, ft.device)
-    patch = S / w
-    if sigma > 0:
-        dx = (cx[None, None, :] - trg_k[:, 0, None, None].to(ft.device)) / patch
-        dy = (cy[None, :, None] - trg_k[:, 1, None, None].to(ft.device)) / patch
-        target = torch.exp(-(dx ** 2 + dy ** 2) / (2 * sigma ** 2)).flatten(1)
-        target = target / target.sum(-1, keepdim=True)
-    else:
-        col = (trg_k[:, 0] / patch).long().clamp(0, w - 1)
-        row = (trg_k[:, 1] / patch).long().clamp(0, h - 1)
-        target = F.one_hot(row * w + col, h * w).float().to(ft.device)
-    return -(target * F.log_softmax(logits, -1)).sum(-1).mean()
+    Coordinates follow the pipeline's continuous [0, width]/[0, height]
+    convention. Out-of-range annotations are rejected, not silently clamped.
+    This native-grid surrogate is NOT the competition PCK acceptance region.
+    """
+    w_img, h_img = map(float, target_wh)
+    h, w = map(int, grid_hw)
+    if min(w_img, h_img, h, w) <= 0 or radius_patches < 0:
+        raise ValueError("Invalid image/grid dimensions or radius")
+    points = torch.as_tensor(targets, dtype=torch.float32, device=device)
+    if points.ndim != 2 or points.shape[1] != 2 or len(points) == 0:
+        raise ValueError("accepted_targets must be a nonempty [N, 2] array")
+    if not torch.isfinite(points).all().item():
+        raise ValueError("Non-finite accepted target")
+    bounds = points.new_tensor([w_img, h_img])
+    if ((points < 0) | (points > bounds)).any().item():
+        raise ValueError("Accepted target outside original image bounds")
+    uv = points / bounds * points.new_tensor([w, h])
+    yy, xx = torch.meshgrid(
+        torch.arange(h, device=device, dtype=torch.float32) + 0.5,
+        torch.arange(w, device=device, dtype=torch.float32) + 0.5,
+        indexing="ij",
+    )
+    d2 = ((xx[None] - uv[:, 0, None, None]).square()
+          + (yy[None] - uv[:, 1, None, None]).square())
+    mask = (d2 <= radius_patches ** 2).any(dim=0)
+    nearest = d2.flatten(1).argmin(dim=1)
+    mask.view(-1)[nearest] = True
+    if mask.all().item():
+        raise ValueError("Every patch is positive; choose a different query/radius")
+    return mask.flatten()
+
+def marginal_positive_loss(logits, positive_mask):
+    """Negative log probability assigned to ANY positive patch."""
+    z = logits.float().reshape(-1)
+    mask = positive_mask.reshape(-1).to(device=z.device, dtype=torch.bool)
+    if mask.shape != z.shape or not mask.any().item() or mask.all().item():
+        raise ValueError("Need an informative, nonempty positive mask")
+    if not torch.isfinite(z).all().item():
+        raise FloatingPointError("Non-finite similarity logits")
+    return -torch.logsumexp(F.log_softmax(z, dim=0)[mask], dim=0)
 
 
-def finetune(cfg, val_every_epoch=True):
+def matching_loss(fs, ft, src_k, accepted_targets, target_wh, S, tau,
+                  radius_patches = 1.0):
+    """
+    fs, ft: [C, H, W] feature maps
+    src_k: [1, 2] source query in resized-image coordinates
+    accepted_targets: [N, 2] targets in ORIGINAL target-image coordinates
+    target_wh: ORIGINAL target-image (width, height)
+    """
+    q = sample_features(fs, src_k.to(fs.device), S)
+    logits = (q @ ft.flatten(1)).reshape(-1) / tau
+
+    positive_mask = positive_patch_mask(
+        accepted_targets,
+        target_wh,
+        ft.shape[-2:],
+        device= ft.device,
+        radius_patches=radius_patches,
+    )
+
+    return marginal_positive_loss(logits, positive_mask)
+
+
+def finetune(cfg, train_ds, val_ds, val_every_epoch = True):
     torch.manual_seed(cfg.seed); random.seed(cfg.seed); np.random.seed(cfg.seed)
     device = cfg.resolved_device()
     model = DinoFeatures(cfg).to(device)
@@ -68,12 +116,11 @@ def finetune(cfg, val_every_epoch=True):
     params = [p for p in model.parameters() if p.requires_grad]
     print(f"trainable params: {sum(p.numel() for p in params) / 1e6:.2f}M")
     opt = torch.optim.AdamW(params, lr=cfg.ft_lr, weight_decay=0.05)
-    train_ds = build_dataset(cfg.replace(max_pairs=cfg.ft_max_train_pairs), split="trn")
     loader = DataLoader(train_ds, batch_size=cfg.ft_batch_size, shuffle=True,
                         num_workers=cfg.num_workers, collate_fn=collate_keep, drop_last=True)
     steps = cfg.ft_epochs * len(loader)
     sched = torch.optim.lr_scheduler.OneCycleLR(opt, max_lr=cfg.ft_lr, total_steps=steps, pct_start=0.05)
-    use_amp = device == "cuda"
+    use_amp = False
     scaler = torch.amp.GradScaler("cuda", enabled=use_amp)
     S = cfg.img_size
     out = Path(cfg.out_dir) / cfg.run_name
@@ -91,9 +138,19 @@ def finetune(cfg, val_every_epoch=True):
                 FS, FT = model(xs), model(xt)
             FS, FT = FS.float(), FT.float()
             loss = sum(
-                matching_loss(FS[b], FT[b], _to_resized(s["src_kps"], s["src_img"].size, S),
-                              _to_resized(s["trg_kps"], s["trg_img"].size, S), S, cfg.ft_temperature, cfg.ft_label_sigma)
-                for b, s in enumerate(batch)) / len(batch)
+                matching_loss(
+                    FS[b], 
+                    FT[b], 
+                    _to_resized(s["src_kps"], s["src_img"].size, S),
+                    s["accepted_targets"],
+                    s["trg_img"].size,
+                    S,
+                    cfg.ft_temperature,
+                    radius_patches = 1.0,
+                )
+                for b, s in enumerate(batch)
+            ) / len(batch)
+            
             opt.zero_grad(set_to_none=True)
             scaler.scale(loss).backward()
             scaler.unscale_(opt)
@@ -105,7 +162,7 @@ def finetune(cfg, val_every_epoch=True):
         if val_every_epoch:
             model.eval()
             summ, _ = evaluate(cfg.replace(split="val", run_name=f"{cfg.run_name}/val_ep{ep}"),
-                               model=model, device=device, verbose=False)
+                               model=model, device=device, ds = val_ds, verbose=False)
             score = summ["pck@0.1 (per-kp)"]
             history.append({"epoch": ep, **summ})
             print(f"epoch {ep}: val PCK@0.1 = {score:.2f}")
