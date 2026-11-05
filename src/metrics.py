@@ -1,4 +1,4 @@
-"""PCK@alpha for the competition (CLAUDE.md, Lang notebook):
+"""PCK@alpha for the competition (CLAUDE.md):
 
     d(q) = min over accepted targets a of ||pred(q) - a||_2
     correct(q) = d(q) / L(q) < alpha        (L = `scale` column, strict "<")
@@ -28,11 +28,6 @@ def is_correct(dist, alpha, strict=True):
     return dist < alpha if strict else dist <= alpha
 
 
-def size_group(scale, bins):
-    """Object size group from L: "small" < bins[0] <= "medium" < bins[1] <= "large"."""
-    return "small" if scale < bins[0] else "medium" if scale < bins[1] else "large"
-
-
 def target_group(trg_xys):
     """"single" or "multi": how many accepted targets a query has."""
     return "single" if len(trg_xys) == 1 else "multi"
@@ -56,7 +51,7 @@ class PCKMeter:
     """Collects one row per query and reports PCK at several alphas (in percent).
 
     Each row also has the groups and the error type used by the evaluation report
-    (docs/PRD_finetuning.md section 4.2): size group, single/multi target, edge distance, and
+    (docs/PRD_finetuning.md section 4.2): single/multi target, edge distance, and
     near miss / wrong keypoint / far miss for wrong predictions.
     """
 
@@ -84,7 +79,6 @@ class PCKMeter:
             "dist": normalized_distance(pred_xy, sample["trg_xys"], sample["scale"]),
             "flipped": flipped,
             "scale": float(sample["scale"]),
-            "size_group": size_group(sample["scale"], cfg["train_group_bins"]),
             "n_accepted": len(self.targets[sample["query_id"]]),
             "target_group": target_group(self.targets[sample["query_id"]]),
             "trg_edge_dist": edge_distance(sample["trg_xys"], sample["trg_img"].size, sample["scale"]),
@@ -113,7 +107,7 @@ class PCKMeter:
 
     def frame(self):
         cols = ["query_id", "pair_id", "category", "pred_x", "pred_y", "dist", "flipped", "scale",
-                "size_group", "n_accepted", "target_group", "trg_edge_dist"]
+                "n_accepted", "target_group", "trg_edge_dist"]
         df = pd.DataFrame(self.rows, columns=cols)
         for alpha in self.alphas:
             df[f"pck@{alpha}"] = is_correct(df["dist"], alpha, self.strict).astype(float)
@@ -134,17 +128,16 @@ class PCKMeter:
         out["flip_rate"] = 100 * df["flipped"].mean() if len(df) else 0.0
         for kind, pct in (100 * df["error_type"].value_counts(normalize=True)).items():
             out[f"{kind}_pct"] = float(pct)
-        for column in ("size_group", "target_group"):
-            for group, value in (100 * df.groupby(column)[key].mean()).items():
-                out[f"{key}/{group}"] = float(value)
+        for group, value in (100 * df.groupby("target_group")[key].mean()).items():
+            out[f"{key}/{group}"] = float(value)
         return out
 
     def per_group(self):
-        """PCK, query count, 95% interval and error mix for each size / target / edge group."""
+        """PCK, query count, 95% interval and error mix for each target / edge group."""
         df = self.frame()
         key = f"pck@{self.main_alpha}"
         rows = []
-        for column in ("size_group", "target_group", "edge_group"):
+        for column in ("target_group", "edge_group"):
             for group, part in df.groupby(column):
                 pck = 100 * part[key].mean()
                 rows.append({"grouping": column, "group": group, "n_queries": len(part), key: round(pck, 1),

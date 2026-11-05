@@ -1,9 +1,9 @@
-"""Soft-label matching loss (Lang finetune.py), extended to several accepted targets.
+"""Soft-label matching loss with several accepted targets.
 
 For a source point, its feature is compared with every target cell. A softmax over the cells
 is trained to put its mass on the accepted targets: a Gaussian bump (sigma in cells) at each
-accepted target, summed and normalised. With one target this is exactly the Lang loss; with
-several, any accepted location (for example any wheel) counts as correct.
+accepted target, summed and normalised. With several targets, any accepted location (for example
+any wheel) counts as correct.
 """
 
 import torch

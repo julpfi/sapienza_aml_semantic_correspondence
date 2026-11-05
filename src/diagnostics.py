@@ -4,10 +4,10 @@ from pathlib import Path
 
 import numpy as np
 
-# Evaluation summary keys kept out of the W&B charts (docs/REVIEW_finetuning.md 2.2). The error-type
-# *_pct values are also left out: the error-type bar plot shows them.
+# Evaluation summary keys kept out of the W&B charts. The error-type *_pct values are also left
+# out: the error-type bar plot shows them.
 SUMMARY_ONLY = ("n_queries", "n_pairs")  # constant: run summary only
-NOT_LOGGED = {"score", "sec_per_query", "loss/small", "loss/medium", "loss/large"}
+NOT_LOGGED = {"score", "sec_per_query"}
 
 
 def worst_queries(frame, n):

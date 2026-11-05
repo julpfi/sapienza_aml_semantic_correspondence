@@ -5,7 +5,6 @@ Rules:
 - Every run saves the full config to <output_dir>/<run_id>/config.json.
 - Paths are None in BASE and are filled in for the detected runtime (local, Colab or Kaggle).
   The SC_* environment variables override them.
-- When main and the Lang pipeline disagreed, the Lang value is used (docs/PRD_reorganization.md).
 """
 
 import os
@@ -96,77 +95,74 @@ BASE = {
         "category": "category",        # not in the challenge data (checked 2026-11-04): everything is "all"
     },
 
-    # --- Reproducibility (Lang values) ---
-    "seed": 0,                         # Lang: 0 (main had 1019)
-    "split_seed": 42,                  # Lang notebook
+    # --- Reproducibility ---
+    "seed": 0,
+    "split_seed": 42,                  # validation split (data/splits.py)
     "val_fraction": 0.2,               # share of image pairs held out for validation
-    "max_val_queries": 500,            # Lang notebook cap (gave 453 queries)
+    "max_val_queries": 500,            # cap on validation queries (gives 453)
     "max_train_queries": 0,            # 0 = all (use a small number for quick checks)
     "max_test_queries": 0,             # 0 = all; never limit a real submission
     "deterministic": True,
     "device": "auto",                  # "auto" | "cuda" | "cpu"
     "num_workers": 2,
 
-    # --- Logging (main) ---
+    # --- Logging ---
     "wandb_project": "sapienza-aml-semantic-correspondence",
     "wandb_entity": "pfingsten-sapienza-universit-di-roma",
     "wandb_mode": "auto",              # "auto" (online if a key is set) | "online" | "offline" | "disabled"
     "publish_best": True,              # upload best.pt to W&B when training ends
     "init_artifact": None,             # start from a teammate's model: "<entity>/<project>/<run_id>-best:latest"
 
-    # --- Model (Lang: torch.hub dinov2_vitb14 -> facebook/dinov2-base) ---
+    # --- Model ---
     "model_id": "facebook/dinov2-base",
     "model_revision": "f9e44c814b77203eaa57a6bdbbd535f21ede1415",  # pinned commit on the Hub
-    "feature_layer": -1,               # transformer block to read (-1 = last); Lang `layer`
-    "pos_embed_interp": "hub",         # "hub" = torch.hub interpolation (Lang results), "hf" = transformers default
+    "feature_layer": -1,               # transformer block to read (-1 = last)
+    "pos_embed_interp": "hub",         # "hub" = torch.hub interpolation, "hf" = transformers default
     "pos_embed_interp_offset": 0.1,    # torch.hub DINOv2 value (models without registers)
-    "image_size": 644,                 # square input; multiple of the patch size (14). Lang submission: 644
+    "image_size": 644,                 # square input; multiple of the patch size (14)
     "image_mean": [0.485, 0.456, 0.406],
     "image_std": [0.229, 0.224, 0.225],
     "attn_implementation": "sdpa",     # transformers attention; "sdpa" uses the memory-efficient kernel on a T4
-    # An untrained "linear"/"mlp" head is the identity, so these defaults give the Lang baseline until
-    # a trained best.pt is loaded with --run (docs/PRD_finetuning.md section 1).
-    "head": "linear",                  # "none" (identity, = Lang) | "linear" | "mlp" (needed to train)
+    # An untrained "linear"/"mlp" head is the identity: without a trained best.pt (--run) the model is
+    # the frozen baseline.
+    "head": "linear",                  # "none" (identity) | "linear" | "mlp" (needed to train)
     "head_dim": None,                  # output size of the "linear" head; None = backbone width (identity start)
 
-    # --- Matching (Lang) ---
+    # --- Matching ---
     "matcher": "soft_window",          # "argmax" | "soft_window"
-    "soft_window": 11,                 # window side in (upsampled) cells; 11 / 0.02: +3.1 PCK on run 1 best.pt (REVIEW 2.1)
+    "soft_window": 11,                 # window side in (upsampled) cells
     "soft_temperature": 0.02,
     "feat_upsample": 2,                # bilinear upsampling of the target feature map
     "flip_test": False,                # try a mirrored source and keep the better global alignment
     "feature_cache_size": 256,         # images kept in memory during inference
     "cache_features_to_disk": False,   # frozen mode only: store backbone features in features_dir
 
-    # --- Training (docs/PRD_finetuning.md section 6; Colab T4) ---
+    # --- Training (Colab T4; why each value: docs/RUN.md section 8) ---
     "train_mode": "finetune",          # "frozen" (train the head) | "finetune" (head + last blocks)
-    "unfreeze_blocks": 1,              # last block + final LayerNorm + head (run 1 used 2: REVIEW 1.1)
+    "unfreeze_blocks": 1,              # last block + final LayerNorm + head
     "batch_size": "auto",              # micro-batch: "auto" = largest that fits the GPU x 0.85, or an int
     "effective_batch": 16,             # batch seen by the optimiser (micro-batch x accumulation steps)
     "effective_batch_schedule": None,  # optional ramp {from_epoch: effective_batch}, e.g. {0: 8, 3: 16}
-    "epochs": 5,                       # run 1 plateaued after epoch 3 (REVIEW 1.15); ~635 updates at batch 16
+    "epochs": 5,                       # ~635 updates at effective batch 16
     "early_stop_patience": 2,          # stop after this many epochs without a better val PCK; 0 = never
-    "lr_head": 5e-5,                   # 10x the backbone; halved against the entropy overshoot (REVIEW 1.8)
-    "lr_backbone": 5e-6,               # top trained block; halved (REVIEW 1.8). Run 1: 1e-5
-    "layer_decay": 0.75,               # block i from the top gets lr_backbone * layer_decay**i (BEiT/MAE: 0.65-0.8)
-    "lr_schedule": "cosine",           # "cosine" (linear warmup + cosine) | "constant" (warmup + constant)
-    "warmup_pct": 0.20,                # share of all updates used for the linear warmup (REVIEW 1.8)
-    "min_warmup_steps": 30,
-    "min_lr_ratio": 0.01,              # cosine ends at this fraction of the peak lr
-    "weight_decay": 0.05,              # Lang; never applied to LayerNorm weights and biases
-    "grad_clip": 20.0,                 # spike guard above the normal norm (~11, max 19.6 in run 1); 1.0 clipped every update (REVIEW 1.9)
+    # Optimiser: AdamW + OneCycleLR; each lr below is the peak (max_lr) of its parameter group.
+    "lr_head": 1e-3,
+    "lr_backbone": 1e-5,               # top trained block and the final LayerNorm
+    "layer_decay": 0.75,               # block i from the top gets lr_backbone * layer_decay**i
+    "lr_pct_start": 0.05,              # OneCycleLR pct_start: share of the updates spent warming up
+    "weight_decay": 0.05,              # AdamW, on every trained parameter
+    "grad_clip": 5.0,                  # max total gradient norm
     "amp": True,                       # fp16 autocast + GradScaler on CUDA (the T4 has no bf16); ignored on CPU
-    "loss_temperature": 0.03,          # Lang ft_temperature; try 0.02 / 0.05
-    "label_sigma": 1.0,                # Gaussian label width in patches (0 = one-hot); Lang ft_label_sigma
+    "loss_temperature": 0.03,          # softmax temperature of the loss; try 0.02 / 0.05
+    "label_sigma": 1.0,                # Gaussian label width in patches (0 = one-hot)
     "checkpoint_every_steps": 150,     # last.pt every N updates (~10 min of ViT-B on a T4); 0 = end of epoch only
     "val_every_epoch": True,
-    "train_group_bins": [100.0, 300.0],  # object size L (px) limits of the small / medium / large groups
     "peak_mass_window": 5,             # train/peak_mass: probability inside this many cells around the best cell
 
     # --- Augmentation (train only; source and target images are augmented separately) ---
-    # Very light (REVIEW 1.14): only aug_image_prob of the images enter the crop/rotation/colour steps
-    # below, and a crop removes at most 10% of the side. About 9.5% of the images change; run 1: 96%.
-    "flip_augment": True,              # Lang ft_pair_flip_aug (both images, keeps left/right consistent)
+    # Very light: only aug_image_prob of the images enter the crop/rotation/colour steps below, and a
+    # crop removes at most 10% of the side (about 9.5% of the images change).
+    "flip_augment": True,              # mirror both images together (keeps left/right consistent)
     "flip_augment_prob": 0.5,
     "aug_image_prob": 0.10,            # share of images that go through the steps below; 0 = off
     "aug_rotation_deg": 10.0,          # max rotation; 0 = off
@@ -180,12 +176,12 @@ BASE = {
     "aug_blur_prob": 0.05,
     "aug_edge_margin": 14,             # px in resized space: points closer to the border reject the augmentation
     "aug_max_tries": 3,
-    "label_jitter": 0.25,              # std of the noise on target labels, in patches (GeoAware-SC); 0 = off. Run 1: 0.5
+    "label_jitter": 0.25,              # std of the noise on target labels, in patches; 0 = off
 
     # --- Evaluation ---
     "pck_alpha": 0.1,                  # competition metric: PCK@0.10
     "pck_alphas_report": [0.05, 0.1, 0.15],
-    "pck_strict": True,                # correct when d / L < alpha (Lang notebook)
+    "pck_strict": True,                # correct when d / L < alpha
     "n_visual_checks": 8,              # worst validation queries drawn after evaluate
     "near_miss_factor": 2.0,           # near miss: alpha <= d/L < factor * alpha
     "far_miss_dist": 0.5,              # far miss: d/L above this
@@ -203,7 +199,7 @@ BASE = {
         "facebook/dinov2-large": "47b73eefe95e8d44ec3623f8890bd894b6ea2d6c",  # Hub commit, checked 2026-11-04
     },
 
-    # --- Submission (Lang / CLAUDE.md format) ---
+    # --- Submission (CLAUDE.md format) ---
     "submission_columns": ["id", "prediction"],
     "prediction_decimals": 2,          # "[75.81,228.38]"
     "clip_to_image": True,

@@ -1,11 +1,12 @@
 """Training: the head with a frozen backbone (train_mode="frozen"), or the head plus the last
-`unfreeze_blocks` DINOv2 blocks (train_mode="finetune"). Hyperparameters: docs/PRD_finetuning.md section 6.
+`unfreeze_blocks` DINOv2 blocks (train_mode="finetune"). Hyperparameters: docs/RUN.md section 8.
 
-Loss: Lang's soft-label matching loss, with all accepted targets (src/models/loss.py).
+Loss: soft-label matching loss with all accepted targets (src/models/loss.py).
 Data: train.csv minus the validation pairs, augmented by src/augment.py.
 Batch: the optimiser sees `effective_batch` samples per update = micro-batch x accumulation steps.
     The micro-batch is the largest that fits the GPU (batch_size="auto", src/utils/batch_size.py).
-LR: one parameter group per trained block (layer-wise decay), linear warmup then cosine, set every update.
+Optimiser: AdamW (weight_decay) with OneCycleLR over all updates: warmup for lr_pct_start of them
+    from max_lr / 25, then cosine down to max_lr / 25e4. One parameter group (own max_lr) per trained part.
 Each epoch: validation PCK (history.json, W&B), best.pt when it improves, last.pt for --resume,
 early stop after `early_stop_patience` epochs without improvement.
 Called from run.py: python run.py --mode train
@@ -43,64 +44,31 @@ TRAIN_MODES = ("frozen", "finetune")
 # ---------------------------------------------------------------------------
 # What is trained, with which learning rate
 # ---------------------------------------------------------------------------
-def _split_decay(name, params, lr, weight_decay):
-    """Two groups: weights with weight decay, LayerNorm weights and biases (1-d) without."""
-    decay = [p for p in params if p.ndim > 1]
-    no_decay = [p for p in params if p.ndim <= 1]
-    return [g for g in ({"name": name, "params": decay, "base_lr": lr, "weight_decay": weight_decay},
-                        {"name": f"{name}_no_decay", "params": no_decay, "base_lr": lr, "weight_decay": 0.0})
-            if g["params"]]
-
-
 def configure_trainable(model, cfg):
-    """Set requires_grad for the mode and return the optimiser parameter groups.
+    """Set requires_grad for the mode and return the optimiser parameter groups, "lr" = peak lr.
 
-    Block i from the top gets lr_backbone * layer_decay**i; the final LayerNorm gets lr_backbone.
+    Head: lr_head. Block i from the top: lr_backbone * layer_decay**i. Final LayerNorm: lr_backbone.
     """
     if cfg["train_mode"] not in TRAIN_MODES:
         raise ValueError(f"train_mode must be one of {TRAIN_MODES}, got {cfg['train_mode']!r}")
     model.backbone.freeze()
     if cfg["train_mode"] == "finetune":
         model.backbone.unfreeze_last(cfg["unfreeze_blocks"])
-    head_params = list(model.head.parameters())
-    for p in head_params:
+    for p in model.head.parameters():
         p.requires_grad_(True)
 
-    wd = cfg["weight_decay"]
-    groups = _split_decay("head", head_params, cfg["lr_head"], wd)
     blocks = list(model.backbone.blocks)
-    for depth, block in enumerate(reversed(blocks)):
-        params = [p for p in block.parameters() if p.requires_grad]
-        if params:
-            groups += _split_decay(f"block_{len(blocks) - 1 - depth}", params,
-                                   cfg["lr_backbone"] * cfg["layer_decay"] ** depth, wd)
-    norm = [p for p in model.backbone.layernorm.parameters() if p.requires_grad]
-    groups += _split_decay("layernorm", norm, cfg["lr_backbone"], wd)
+    parts = [("head", model.head, cfg["lr_head"])]
+    parts += [(f"block_{len(blocks) - 1 - depth}", block, cfg["lr_backbone"] * cfg["layer_decay"] ** depth)
+              for depth, block in enumerate(reversed(blocks))]
+    parts.append(("layernorm", model.backbone.layernorm, cfg["lr_backbone"]))
+    groups = [{"name": name, "params": [p for p in module.parameters() if p.requires_grad], "lr": lr}
+              for name, module, lr in parts]
+    groups = [g for g in groups if g["params"]]
     if not groups:
         raise ValueError("Nothing to train: head='none' with train_mode='frozen'. In BASE (src/config.py), "
                          "set head='linear' (or 'mlp'), optionally with train_mode='finetune'.")
-    for g in groups:
-        g["lr"] = g["base_lr"]
     return groups
-
-
-def lr_factor(step, total_steps, cfg):
-    """Learning-rate multiplier at optimiser update `step` (0-based): linear warmup, then cosine or constant."""
-    warmup = min(max(cfg["min_warmup_steps"], round(cfg["warmup_pct"] * total_steps)), max(total_steps - 1, 1))
-    if step < warmup:
-        return (step + 1) / warmup
-    if cfg["lr_schedule"] == "constant":
-        return 1.0
-    if cfg["lr_schedule"] != "cosine":
-        raise ValueError(f"lr_schedule must be 'cosine' or 'constant', got {cfg['lr_schedule']!r}")
-    progress = min(1.0, (step - warmup) / max(1, total_steps - warmup))
-    floor = cfg["min_lr_ratio"]
-    return floor + (1 - floor) * 0.5 * (1 + math.cos(math.pi * progress))
-
-
-def set_lr(optimizer, factor):
-    for g in optimizer.param_groups:
-        g["lr"] = g["base_lr"] * factor
 
 
 # ---------------------------------------------------------------------------
@@ -164,7 +132,7 @@ def jitter_labels(trg_resized, image_size, n_cells, std_cells):
 
 
 def batch_loss(model, samples, cfg, store, use_amp, train=True):
-    """Per-sample losses [B] and detached diagnostics (REVIEW_finetuning 1.4, 1.11):
+    """Per-sample losses [B] and detached diagnostics (docs/RUN.md section 9):
     softmax_entropy and peak_mass per sample [B]; embed_var_batch over the source descriptors of the
     batch and embed_var_cells over the cells of each target map (mean over the batch), as floats."""
     src_feats, trg_feats = compute_features(model, samples, cfg, store, use_amp)
@@ -240,7 +208,7 @@ def train(cfg, model, run_id, run_dir, resume=False):
         micro, probe_peak = choose_micro_batch(model, cfg, groups, use_amp)
     seed_everything(cfg["seed"], cfg["deterministic"])  # the probe used random numbers
 
-    optimizer = torch.optim.AdamW(groups)
+    optimizer = torch.optim.AdamW(groups, weight_decay=cfg["weight_decay"])
     dataset = build_dataset(cfg, "train")
     if len(dataset) == 0:
         raise ValueError("The training split is empty.")
@@ -249,6 +217,9 @@ def train(cfg, model, run_id, run_dir, resume=False):
     plan, total_updates = plan_updates(n_batches, micro, cfg)
     print(f"{len(dataset)} training queries, micro-batch {micro}, effective batch "
           f"{[micro * a for a, _ in plan]} per epoch, {total_updates} updates in {cfg['epochs']} epochs")
+    # Other OneCycleLR arguments at their defaults: div_factor 25, final_div_factor 1e4, cosine anneal.
+    scheduler = torch.optim.lr_scheduler.OneCycleLR(optimizer, max_lr=[g["lr"] for g in groups],
+                                                    total_steps=total_updates, pct_start=cfg["lr_pct_start"])
     scaler = torch.amp.GradScaler("cuda", enabled=use_amp)
     augment = cfg["flip_augment"] or augmentation_enabled(cfg)
     store = None
@@ -262,6 +233,7 @@ def train(cfg, model, run_id, run_dir, resume=False):
     if ckpt is not None:
         load_model_weights(model, ckpt["model"])
         optimizer.load_state_dict(ckpt["optimizer"])
+        scheduler.load_state_dict(ckpt["scheduler"])
         scaler.load_state_dict(ckpt["scaler"])
         _set_rng_state(ckpt["rng"])
         global_step, best, history = ckpt["global_step"], ckpt["best_score"], ckpt["history"]
@@ -286,7 +258,8 @@ def train(cfg, model, run_id, run_dir, resume=False):
 
     def save_last(epoch, batches_done, complete):
         save_checkpoint({
-            "model": trainable_state(model), "optimizer": optimizer.state_dict(), "scaler": scaler.state_dict(),
+            "model": trainable_state(model), "optimizer": optimizer.state_dict(),
+            "scheduler": scheduler.state_dict(), "scaler": scaler.state_dict(),
             "epoch": epoch, "batches_done": batches_done, "epoch_complete": complete, "micro_batch": micro,
             "global_step": global_step, "best_score": best, "history": history, "stale_epochs": stale,
             "rng": _rng_state(), "config": cfg, "git_commit": git_commit(),
@@ -303,7 +276,6 @@ def train(cfg, model, run_id, run_dir, resume=False):
                             generator=torch.Generator().manual_seed(cfg["seed"] + epoch))
         model.train()
         optimizer.zero_grad(set_to_none=True)
-        set_lr(optimizer, lr_factor(global_step, total_updates, cfg))
         step_losses, step_groups, step_stats = [], defaultdict(list), defaultdict(list)
         t_epoch = time.time()
         progress = tqdm(loader, desc=f"epoch {epoch}", total=n_batches)
@@ -336,11 +308,12 @@ def train(cfg, model, run_id, run_dir, resume=False):
             scaler.step(optimizer)
             scaler.update()
             optimizer.zero_grad(set_to_none=True)
+            lrs = {f"lr/{g['name']}": g["lr"] for g in optimizer.param_groups}  # lr of this update
+            scheduler.step()
             global_step += 1
-            set_lr(optimizer, lr_factor(global_step, total_updates, cfg))
             mean_loss = float(np.mean(step_losses)) if step_losses else float("nan")
             means = {k: float(np.mean(v)) for k, v in step_stats.items()}
-            if step_losses:  # 0.95 EMAs: memory of ~20 updates (REVIEW_finetuning 1.7)
+            if step_losses:  # 0.95 EMAs: memory of ~20 updates
                 loss_ema = mean_loss if loss_ema is None else 0.95 * loss_ema + 0.05 * mean_loss
                 entropy = means["softmax_entropy"]
                 entropy_ema = entropy if entropy_ema is None else 0.95 * entropy_ema + 0.05 * entropy
@@ -348,8 +321,7 @@ def train(cfg, model, run_id, run_dir, resume=False):
                 log = {"train/loss": mean_loss, "train/loss_ema": loss_ema, "train/softmax_entropy_ema": entropy_ema,
                        **{f"train/{k}": v for k, v in means.items()},
                        **{f"train/loss/{g}": float(np.mean(v)) for g, v in step_groups.items()},
-                       **{f"lr/{g['name']}": g["lr"] for g in optimizer.param_groups
-                          if not g["name"].endswith("_no_decay")},
+                       **lrs,
                        "batch/effective": micro * accum,
                        "optim/grad_norm": grad_norm, "optim/grad_clipped": float(grad_norm > cfg["grad_clip"]),
                        "optim/amp_scale": scaler.get_scale() if use_amp else 1.0}

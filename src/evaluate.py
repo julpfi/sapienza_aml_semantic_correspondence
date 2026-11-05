@@ -1,9 +1,9 @@
 """Validation: predictions + PCK on the held-out image pairs, with the full report.
 
 Outputs in <run_dir>/ (skipped with save=False, as during training):
-    summary.json      PCK@alphas (+95% interval), score (0-1), error mix, PCK per group, val loss
-    per_query.csv     one row per query: prediction, d/L, size/target/edge group, error type
-    per_group.csv     PCK, count, interval and error mix per size / single-multi target / edge group
+    summary.json      PCK@alphas (+95% interval), score (0-1), error mix, PCK and loss per single/multi target
+    per_query.csv     one row per query: prediction, d/L, target/edge group, error type
+    per_group.csv     PCK, count, interval and error mix per single/multi target and edge group
     error_types.csv   correct, near_miss, wrong_keypoint, far_miss, other_miss counts
 Groups and error types: docs/PRD_finetuning.md section 4.2.
 """
@@ -55,9 +55,8 @@ def evaluate(cfg, model, run_dir, save=True, verbose=True, with_loss=True, cache
     if losses:
         frame["loss"] = frame["query_id"].map(losses)
         summary["loss"] = float(frame["loss"].mean())
-        for column in ("size_group", "target_group"):
-            for group, value in frame.groupby(column)["loss"].mean().items():
-                summary[f"loss/{group}"] = float(value)
+        for group, value in frame.groupby("target_group")["loss"].mean().items():
+            summary[f"loss/{group}"] = float(value)
 
     official = official_score(cfg, read_queries(cfg, "val"), frame)
     if official is not None:

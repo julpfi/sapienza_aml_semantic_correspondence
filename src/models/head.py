@@ -1,8 +1,8 @@
 """Trainable head on top of the frozen backbone features.
 
-"none"   identity: reproduces the training-free Lang pipeline exactly.
+"none"   identity: the training-free baseline.
 "linear" 1x1 convolution, initialised as the identity (when head_dim equals the feature size),
-         so training starts from the Lang behaviour.
+         so training starts from the baseline.
 "mlp"    residual 2-layer MLP; the last layer starts at zero, so it also starts as the identity.
 The output is always L2-normalised per patch, because matching uses cosine similarity.
 """

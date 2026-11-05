@@ -3,7 +3,7 @@
 predict()          -> <run_dir>/predictions.csv   id,x,y  (original target pixels)
 write_submission() -> <run_dir>/submission.csv    id,prediction  with prediction = "[x,y]"
 
-The submission has exactly the ids and order of sample_submission.csv (Lang format, 2 decimals).
+The submission has exactly the ids and order of sample_submission.csv (2 decimals).
 It is rejected if an id is missing or repeated, or if a value is not finite.
 """
 

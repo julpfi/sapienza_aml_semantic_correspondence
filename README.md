@@ -4,9 +4,8 @@ Our code for the [AML Challenge](https://www.kaggle.com/competitions/aml-challen
 given a source image, a target image and a source point, predict the corresponding point in the
 target image. The score is PCK@0.10.
 
-**How to run everything: [docs/RUN.md](docs/RUN.md).** Fine-tuning plan and hyperparameter choices:
-[docs/PRD_finetuning.md](docs/PRD_finetuning.md). What changed in the reorganization:
-[docs/REORGANIZATION.md](docs/REORGANIZATION.md).
+**How to run everything: [docs/RUN.md](docs/RUN.md).** Fine-tuning plan: [docs/PRD_finetuning.md](docs/PRD_finetuning.md).
+Analysis of the first fine-tuning run: [docs/REVIEW_finetuning.md](docs/REVIEW_finetuning.md).
 
 ## Structure
 
@@ -16,7 +15,7 @@ environment.yml     Dependencies (conda env `advance`)
 .env.example        Secret names; copy to .env (ignored by git)
 src/config.py       The only configuration (BASE) and runtime paths (local / Colab / Kaggle)
 src/models/         DINOv2 backbone (Hugging Face), head, matching, loss
-src/train.py        Training: fine-tuning the last blocks + head (T4: auto batch, warmup+cosine, layer decay)
+src/train.py        Training: fine-tuning the last blocks + head (T4: auto batch, AdamW + OneCycleLR, layer decay)
 src/augment.py      Training augmentation (flip, crop, rotation, colour) with the edge rule
 src/evaluate.py     Validation PCK report (groups, error types)
 src/sweep.py        Evaluation sweep: matching settings x image_size x model (report only)

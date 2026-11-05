@@ -7,8 +7,9 @@ The review has two parts:
 
 1. **How the fine-tuning works**: each question from the run notes, explained with the code and the numbers of this run.
 2. **Takeaways from the run and W&B**: what the run showed, and the changes that follow (charts to delete or add,
-   training settings). Part 2 is applied in `src/config.py` and the code (2026-11-05); the table in 2.4 lists the
-   final values.
+   training settings). Part 2 is applied in `src/config.py` and the code (2026-11-05). The optimiser settings in
+   2.4 (learning rates, warmup, clip) were then replaced by AdamW + OneCycleLR, lr_head 1e-3, clip 5: current
+   values in [RUN.md](RUN.md) section 8.
 
 Related: [PRD_finetuning.md](PRD_finetuning.md) (design and hyperparameter choices), [RUN.md](RUN.md) (how to run).
 
@@ -560,7 +561,7 @@ learning. So if val PCK is still rising clearly at epoch 4, go back to 6–7 epo
   batch schedule);
 - `train/loss`, `train/loss_ema`, `train/loss/single`, `train/loss/multi`, `train/softmax_entropy`;
 - `lr/head`, `lr/block_11`, `lr/block_10`;
-- `optim/grad_norm`, `optim/grad_clipped` (useful again once the clip is 10), `optim/amp_scale`;
+- `optim/grad_norm`, `optim/grad_clipped` (useful again once the clip is 20), `optim/amp_scale`;
 - `val/pck@0.1`, `val/pck@0.1_ci95`, `val/pck@0.05`, `val/pck@0.15`, `val/loss`, `val/loss/single`,
   `val/loss/multi`, `val/pck@0.1/{single, multi}`;
 - the error-type bar plot, the `per_group` table, the distance histogram and the worst-prediction images.

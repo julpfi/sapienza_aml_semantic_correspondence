@@ -1,6 +1,6 @@
 """DINOv2 backbone loaded from the official Hugging Face weights (facebook/dinov2-*).
 
-Equivalence with the Lang pipeline (torch.hub dinov2_vitb14), see docs/PRD_reorganization.md:
+Same features as torch.hub dinov2_vitb14:
 - Patch tokens of block `feature_layer` AFTER the final LayerNorm (= hub norm=True), CLS and
   register tokens dropped, L2-normalised per patch.
 - With pos_embed_interp="hub", position embeddings are resized exactly like torch.hub

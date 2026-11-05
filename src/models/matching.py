@@ -1,4 +1,4 @@
-"""Keypoint transfer (Lang pipeline, unchanged logic):
+"""Keypoint transfer:
 source point -> its feature -> cosine similarity with every target cell -> predicted location.
 """
 

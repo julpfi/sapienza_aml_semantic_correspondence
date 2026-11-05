@@ -2,8 +2,7 @@
 
 How to set up the project, run every step and submit, locally, in Colab or on Kaggle; how the "run" files fit
 together; the fine-tuning hyperparameters; and how to read the W&B charts.
-The repo layout and what moved where are in [REORGANIZATION.md](REORGANIZATION.md). The analysis of the first
-fine-tuning run is in [REVIEW_finetuning.md](REVIEW_finetuning.md).
+The analysis of the first fine-tuning run is in [REVIEW_finetuning.md](REVIEW_finetuning.md).
 
 ## 1. What the pipeline does
 
@@ -105,7 +104,7 @@ outputs/
     config.json        settings of this run
     summary.json       PCK@0.05/0.10/0.15 (+95% interval), score, error mix, PCK and loss per group
     per_query.csv      one row per validation query (prediction, dist = error / L, groups, error type)
-    per_group.csv      PCK per object size (small/medium/large), single/multi target, edge distance
+    per_group.csv      PCK per single/multi target and per edge distance
     error_types.csv    correct / near_miss / wrong_keypoint / far_miss / other_miss
     sweep.csv          flip_test x soft_window x soft_temperature (x image_size x model): a report only
     visual_check.png   the worst validation predictions
@@ -190,24 +189,24 @@ Push your code before running it: Colab pulls from GitHub, and edits made in Col
 ## 8. Fine-tuning hyperparameters
 
 Current `BASE` (run 2) next to run 1 (`20261104-155818_train`, val PCK@0.10 62.9, 66.0 with the new
-inference window). Every change comes from [REVIEW_finetuning.md](REVIEW_finetuning.md) (section in the last
-column).
+inference window). The numbers in the last column are sections of [REVIEW_finetuning.md](REVIEW_finetuning.md).
+The optimiser settings (learning rates, schedule, clip) were chosen afterwards and replace the ones in its 2.4.
 
 | Setting | Now | Run 1 | Why |
 |---|---|---|---|
 | **What is trained** | | | |
 | `train_mode` / `head` | finetune / linear | same | head initialised as the identity: update 0 = frozen DINOv2 (1.2) |
 | `unfreeze_blocks` | **1** (block 11 + final LayerNorm + head, 7.68M params) | 2 (14.77M) | fewer weights moved on 2,042 queries; less forgetting |
-| `lr_head` | **5e-5** | 1e-4 | the head moves every cell at once; halved against the entropy overshoot (1.8) |
-| `lr_backbone` | **5e-6** (block 11 and final LayerNorm) | 1e-5 | halved (1.8) |
+| **Optimiser** | AdamW + OneCycleLR | AdamW + warmup/cosine | |
+| `lr_head` (peak) | **1e-3** | 1e-4 | 100× the backbone: the identity head is the cheap part to move. Watch the entropy and `embed_var_cells` (collapse) |
+| `lr_backbone` (peak) | 1e-5 (block 11 and final LayerNorm) | same | |
 | `layer_decay` | 0.75 | same | lr × 0.75 per block below the top; no effect with 1 block |
-| `weight_decay` | 0.05, not on LayerNorm / biases | same | harmless at this lr (1.10) |
+| `weight_decay` | 0.05, **on every trained parameter** | 0.05, not on LayerNorm / biases | plain AdamW; negligible at these learning rates (1.10) |
 | **Schedule** | | | |
 | `epochs` / `early_stop_patience` | **5 / 2** | 7 / 3 | run 1 plateaued after epoch 3 (1.15) |
 | `effective_batch` | 16 (micro-batch auto) | same | 127 updates per epoch, 635 in total |
-| `warmup_pct` | **0.20** (127 updates = 1 epoch) | 0.10 | slower start against the overshoot (1.8) |
-| `lr_schedule` / `min_lr_ratio` | cosine / 0.01 | same | |
-| `grad_clip` | **20** | 1 | 1 clipped every update; 20 is a spike guard above the normal norm (1.9) |
+| `lr_pct_start` | **0.05** (≈ 32 updates) | warmup 10% | OneCycleLR: lr rises from peak / 25 to the peak, then cosine to peak / 25e4. Other arguments at their defaults, so AdamW's beta1 also cycles 0.95 → 0.85 → 0.95 |
+| `grad_clip` | **5** | 1 | the normal norm is ≈ 11 (run 1), so most updates are clipped: `grad_clipped` ≈ 1 is expected (1.9) |
 | `amp` | fp16 + GradScaler | same | the T4 has no bf16 |
 | **Loss** | | | |
 | `loss_temperature` | 0.03 | same | |
@@ -225,7 +224,7 @@ column).
 | `flip_test` | False | same | +0.7 only after fine-tuning, inside the interval |
 
 Run 2 changes several settings at once. If it is worse than run 1 by more than the interval (± 4.5), undo the
-learning rates first, then the augmentation. Compare with run 1 at the same inference settings (66.0).
+head learning rate first (1e-3 → 1e-4), then the augmentation. Compare with run 1 at the same inference settings (66.0).
 
 ## 9. Reading the W&B charts
 
@@ -243,10 +242,10 @@ and the console capture are off.
 | `train/peak_mass` | probability inside a 5 × 5-cell window around the most likely cell | ≈ 1: one peak (maybe wide). Low: mass on several separate peaks (e.g. left and right eye). Tells apart what entropy alone cannot |
 | `train/embed_var_batch` | 1 − ‖mean‖² of the batch's source descriptors | stays near its update-0 value = healthy; a steady fall = different queries get the same descriptor (collapse) |
 | `train/embed_var_cells` | 1 − ‖mean‖² over the cells of each target map | a steady fall together with a rising entropy = the map is flattening (collapse): lower `lr_head` or stop |
-| `lr/head`, `lr/block_11` | learning rate per group | linear warmup over 1 epoch, then cosine to 1% |
+| `lr/head`, `lr/block_11`, `lr/layernorm` | learning rate per group, used by that update | OneCycleLR: rises over the first 5% of the updates, then cosine to ≈ 0 |
 | `batch/effective` | samples per update | flat at 16 without `effective_batch_schedule` |
 | `optim/grad_norm` | total gradient norm before clipping (AMP scale removed) | large because the logits are divided by T = 0.03 (×33): not instability. Run 1: 27–44 in epoch 0, ≈ 11 after |
-| `optim/grad_clipped` | 1 when the norm is above `grad_clip` | with clip 20: ≈ 0 after the warmup. Often 1 = real spikes |
+| `optim/grad_clipped` | 1 when the norm is above `grad_clip` | with clip 5 and a normal norm ≈ 11 it is mostly 1; read `grad_norm` for spikes instead |
 | `optim/amp_scale` | fp16 GradScaler scale | drops in the first updates (fp16 overflows, updates skipped): normal |
 
 **Validation (`val/`, each epoch)**
@@ -257,11 +256,10 @@ and the console capture are off.
 | `val/pck@0.1_ci95` | half-width of the 95% interval (≈ ± 4.5). Optimistic (queries of a pair are correlated); for two settings on the same queries a smaller difference can still be real |
 | `val/pck@0.05`, `val/pck@0.15` | precision (0.05) and coarse correctness (0.15) |
 | `val/pck@0.1/{single, multi}` | multi-target queries score higher although their loss is higher |
-| `val/pck@0.1/{small, medium, large}` | small = L < 100 px, tolerance under one grid cell. Run 1: small fell 61.8 → 54.0 while large rose ≈ 28 points |
 | `val/loss`, `val/loss/{single, multi}` | same loss without augmentation; should go down with PCK |
 | `val/flip_rate` | share of queries where `flip_test` picked the mirrored source (0 while it is off) |
 | `val/error_types` (bar plot) | correct (d < 0.1 L); wrong_keypoint (on another labelled part of the same pair, e.g. left ↔ right eye); near_miss (0.1–0.2 L); other_miss (0.2–0.5 L); far_miss (> 0.5 L). Run 1: fine-tuning removed far / other misses; near_miss (16%) and wrong_keypoint (10%) are what is left |
-| `val/per_group`, `val/dist_hist`, `val/worst_predictions` | table per group, histogram of d / L, the worst 8 queries drawn |
+| `val/per_group`, `val/dist_hist`, `val/worst_predictions` | table per single/multi target and edge distance, histogram of d / L, the worst 8 queries drawn |
 | `val/sweep` (evaluate only) | matching settings scored on the same features |
 
 Run summary (not charts): `best_pck`, `val/n_queries`, `val/n_pairs`, `micro_batch`, `total_updates`,
