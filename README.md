@@ -29,7 +29,7 @@ splits/             Shared validation split, tracked in git
 scripts/            Colab setup, weight download, Kaggle download/submit, augmentation check
 colab/run.ipynb     Thin Colab runner
 notebooks/          Thin Kaggle runner (offline)
-docs/               RUN.md, PRD_finetuning.md, reorganization guide
+docs/               RUN.md (how to run, hyperparameters, W&B charts), PRD_finetuning.md, REVIEW_finetuning.md, reorganization guide
 outputs/<run_id>/   One folder per run: config.json + results (not in git), see RUN.md
 ```
 
@@ -40,7 +40,7 @@ conda env create -f environment.yml
 conda activate advance
 cp .env.example .env                                 # add your Kaggle / W&B / HF keys
 python scripts/kaggle_io.py download                 # competition data -> data/raw/
-python run.py --mode evaluate                       # validation PCK@0.10 (Lang baseline: 40.4)
+python run.py --mode evaluate                       # validation PCK@0.10 (frozen baseline: 41.1; 40.4 with the old 5x5 window)
 python run.py --mode submit                         # outputs/<run_id>/submission.csv
 ```
 

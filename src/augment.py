@@ -1,7 +1,8 @@
 """Training augmentation of one sample (docs/PRD_finetuning.md sections 3.3 and 5.5).
 
-Source and target are different photos, so each is augmented separately: random crop, rotation,
-colour jitter, grayscale and blur. Points are moved with the same transform as their image.
+Source and target are different photos, so each is augmented separately: with probability
+`aug_image_prob` an image goes through random crop, rotation, colour jitter, grayscale and blur;
+otherwise it is left as it is. Points are moved with the same transform as their image.
 Edge rule: after a geometric transform every kept point must be at least `aug_edge_margin` pixels
 (in resized space) away from the border and from the padding a rotation adds. A failing source
 point, or a target image that loses all accepted targets, rejects the geometric transform of that
@@ -79,6 +80,8 @@ def _photometric(img, cfg):
 
 def _augment_image(img, xy, cfg, need_all):
     """Geometric transform with the edge rule, then colour. need_all: every point must be kept."""
+    if random.random() >= cfg["aug_image_prob"]:
+        return img, xy.astype(np.float32)
     for _ in range(cfg["aug_max_tries"]):
         new_img, new_xy, keep = _geometric(img, xy, cfg)
         if keep.all() if need_all else keep.any():
@@ -105,6 +108,8 @@ def augment_sample(sample, cfg):
 
 def augmentation_enabled(cfg):
     """True when any augmentation besides the pair flip can change an image."""
+    if not cfg["aug_image_prob"]:
+        return False
     return bool(cfg["aug_crop_prob"] or (cfg["aug_rotation_deg"] and cfg["aug_rotation_prob"])
                 or (cfg["aug_color_jitter"] and cfg["aug_color_prob"]) or cfg["aug_grayscale_prob"]
                 or cfg["aug_blur_prob"])

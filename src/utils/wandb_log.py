@@ -13,4 +13,6 @@ def init_wandb(cfg, run_id, run_dir, job_type="train"):
     import wandb
 
     return wandb.init(project=cfg["wandb_project"], entity=cfg["wandb_entity"], id=run_id, name=run_id,
-                      job_type=job_type, config=cfg, resume="allow", mode=mode, dir=str(run_dir))
+                      job_type=job_type, config=cfg, resume="allow", mode=mode, dir=str(run_dir),
+                      # no system charts (GPU, CPU, disk...) and no console capture (REVIEW_finetuning 2.2)
+                      settings=wandb.Settings(x_disable_stats=True, console="off"))

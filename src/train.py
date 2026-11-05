@@ -26,8 +26,8 @@ from data.datasets import build_dataset, collate_samples
 from data.transforms import preprocess_image, to_resized
 from src.augment import augment_sample, augmentation_enabled
 from src.evaluate import evaluate
-from src.metrics import size_group
-from src.models.loss import matching_loss
+from src.metrics import target_group
+from src.models.loss import embedding_variance, matching_loss
 from src.utils.batch_size import fake_samples, find_micro_batch
 from src.utils.checkpoint import (
     checkpoint_path, download_artifact, load_checkpoint, load_model_weights, publish_best, save_checkpoint,
@@ -164,25 +164,27 @@ def jitter_labels(trg_resized, image_size, n_cells, std_cells):
 
 
 def batch_loss(model, samples, cfg, store, use_amp, train=True):
-    """Per-sample losses [B] and softmax entropies [B]."""
+    """Per-sample losses [B] and detached diagnostics (REVIEW_finetuning 1.4, 1.11):
+    softmax_entropy and peak_mass per sample [B]; embed_var_batch over the source descriptors of the
+    batch and embed_var_cells over the cells of each target map (mean over the batch), as floats."""
     src_feats, trg_feats = compute_features(model, samples, cfg, store, use_amp)
     size = cfg["image_size"]
-    losses, entropies = [], []
+    losses, stats = [], []
     for b, s in enumerate(samples):
         trg = to_resized(s["trg_xys"], s["trg_img"].size, size)
         if train:
             trg = jitter_labels(trg, size, trg_feats.shape[-1], cfg["label_jitter"])
-        loss, entropy = matching_loss(src_feats[b], trg_feats[b], to_resized(s["src_xy"][None], s["src_img"].size, size),
-                                      trg, size, cfg["loss_temperature"], cfg["label_sigma"])
+        loss, sample_stats = matching_loss(src_feats[b], trg_feats[b],
+                                           to_resized(s["src_xy"][None], s["src_img"].size, size), trg, size,
+                                           cfg["loss_temperature"], cfg["label_sigma"], cfg["peak_mass_window"])
         losses.append(loss)
-        entropies.append(entropy)
-    return torch.stack(losses), torch.stack(entropies)
-
-
-def sample_groups(sample, cfg):
-    """Size group and single/multi target group of a sample (before augmentation drops targets)."""
-    return (size_group(sample["scale"], cfg["train_group_bins"]),
-            "single" if len(sample["trg_xys"]) == 1 else "multi")
+        stats.append(sample_stats)
+    return torch.stack(losses), {
+        "softmax_entropy": torch.stack([st["entropy"] for st in stats]),
+        "peak_mass": torch.stack([st["peak_mass"] for st in stats]),
+        "embed_var_batch": float(embedding_variance(torch.stack([st["query"] for st in stats]))),
+        "embed_var_cells": float(np.mean([float(embedding_variance(f.flatten(1).T)) for f in trg_feats])),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -256,14 +258,14 @@ def train(cfg, model, run_id, run_dir, resume=False):
         else:
             store = FeatureStore(cfg)
 
-    start_epoch, skip_batches, global_step, best, history, stale, samples_seen = 0, 0, 0, -math.inf, [], 0, 0
+    start_epoch, skip_batches, global_step, best, history, stale = 0, 0, 0, -math.inf, [], 0
     if ckpt is not None:
         load_model_weights(model, ckpt["model"])
         optimizer.load_state_dict(ckpt["optimizer"])
         scaler.load_state_dict(ckpt["scaler"])
         _set_rng_state(ckpt["rng"])
         global_step, best, history = ckpt["global_step"], ckpt["best_score"], ckpt["history"]
-        stale, samples_seen = ckpt.get("stale_epochs", 0), ckpt.get("samples_seen", 0)
+        stale = ckpt.get("stale_epochs", 0)
         if ckpt["epoch_complete"]:
             start_epoch = ckpt["epoch"] + 1
         else:
@@ -286,13 +288,13 @@ def train(cfg, model, run_id, run_dir, resume=False):
         save_checkpoint({
             "model": trainable_state(model), "optimizer": optimizer.state_dict(), "scaler": scaler.state_dict(),
             "epoch": epoch, "batches_done": batches_done, "epoch_complete": complete, "micro_batch": micro,
-            "global_step": global_step, "best_score": best, "history": history, "stale_epochs": stale, "samples_seen": samples_seen,
+            "global_step": global_step, "best_score": best, "history": history, "stale_epochs": stale,
             "rng": _rng_state(), "config": cfg, "git_commit": git_commit(),
         }, run_dir, "last.pt")
 
     key = f"pck@{cfg['pck_alpha']}"
     val_set = build_dataset(cfg, "val") if wandb_run else None
-    loss_ema = None
+    loss_ema = entropy_ema = None
     for epoch in range(start_epoch, cfg["epochs"]):
         accum, _ = plan[epoch]
         # The shuffle depends only on (seed, epoch), so a resumed epoch sees the same batches.
@@ -302,29 +304,27 @@ def train(cfg, model, run_id, run_dir, resume=False):
         model.train()
         optimizer.zero_grad(set_to_none=True)
         set_lr(optimizer, lr_factor(global_step, total_updates, cfg))
-        step_losses, step_groups, step_entropy, nonfinite = [], defaultdict(list), [], 0
-        t_epoch, t_step = time.time(), time.time()
-        if model.device.type == "cuda":
-            torch.cuda.reset_peak_memory_stats()
+        step_losses, step_groups, step_stats = [], defaultdict(list), defaultdict(list)
+        t_epoch = time.time()
         progress = tqdm(loader, desc=f"epoch {epoch}", total=n_batches)
         for i, samples in enumerate(progress):
             if i < skip_batches:
                 continue
-            groups_of = [sample_groups(s, cfg) for s in samples]
+            groups_of = [target_group(s["trg_xys"]) for s in samples]  # before augmentation drops targets
             if augment:
                 samples = [augment_sample(s, cfg) for s in samples]
-            losses, entropies = batch_loss(model, samples, cfg, store, use_amp)
-            samples_seen += len(samples)
+            losses, stats = batch_loss(model, samples, cfg, store, use_amp)
             loss = losses.mean()
             if torch.isfinite(loss):
                 scaler.scale(loss / accum).backward()
                 step_losses += losses.detach().tolist()
-                step_entropy += entropies.tolist()
-                for value, (size_g, target_g) in zip(losses.detach().tolist(), groups_of):
-                    step_groups[size_g].append(value)
-                    step_groups[target_g].append(value)
+                step_stats["softmax_entropy"] += stats["softmax_entropy"].tolist()
+                step_stats["peak_mass"] += stats["peak_mass"].tolist()
+                step_stats["embed_var_batch"].append(stats["embed_var_batch"])
+                step_stats["embed_var_cells"].append(stats["embed_var_cells"])
+                for value, group in zip(losses.detach().tolist(), groups_of):
+                    step_groups[group].append(value)
             else:
-                nonfinite += 1
                 print(f"Warning: non-finite loss at epoch {epoch} batch {i}; batch skipped.")
             if (i + 1) % accum and i + 1 != n_batches:
                 continue
@@ -339,26 +339,23 @@ def train(cfg, model, run_id, run_dir, resume=False):
             global_step += 1
             set_lr(optimizer, lr_factor(global_step, total_updates, cfg))
             mean_loss = float(np.mean(step_losses)) if step_losses else float("nan")
-            if step_losses:
+            means = {k: float(np.mean(v)) for k, v in step_stats.items()}
+            if step_losses:  # 0.95 EMAs: memory of ~20 updates (REVIEW_finetuning 1.7)
                 loss_ema = mean_loss if loss_ema is None else 0.95 * loss_ema + 0.05 * mean_loss
+                entropy = means["softmax_entropy"]
+                entropy_ema = entropy if entropy_ema is None else 0.95 * entropy_ema + 0.05 * entropy
             if wandb_run:
-                n_samples = len(step_losses)
-                log = {"train/loss": mean_loss, "train/loss_ema": loss_ema, "train/epoch": epoch + i / n_batches,
-                       "train/softmax_entropy": float(np.mean(step_entropy)) if step_entropy else None,
-                       "train/nonfinite_batches": nonfinite,
+                log = {"train/loss": mean_loss, "train/loss_ema": loss_ema, "train/softmax_entropy_ema": entropy_ema,
+                       **{f"train/{k}": v for k, v in means.items()},
                        **{f"train/loss/{g}": float(np.mean(v)) for g, v in step_groups.items()},
                        **{f"lr/{g['name']}": g["lr"] for g in optimizer.param_groups
                           if not g["name"].endswith("_no_decay")},
-                       "batch/micro": micro, "batch/grad_accum_steps": accum, "batch/effective": micro * accum,
-                       "batch/samples_seen": samples_seen,
+                       "batch/effective": micro * accum,
                        "optim/grad_norm": grad_norm, "optim/grad_clipped": float(grad_norm > cfg["grad_clip"]),
-                       "optim/amp_scale": scaler.get_scale() if use_amp else 1.0,
-                       "system/samples_per_s": n_samples / max(time.time() - t_step, 1e-6)}
-                if model.device.type == "cuda":
-                    log["system/peak_gpu_gb"] = torch.cuda.max_memory_allocated() / 2**30
+                       "optim/amp_scale": scaler.get_scale() if use_amp else 1.0}
                 wandb_run.log({k: v for k, v in log.items() if v is not None}, step=global_step)
             progress.set_postfix(loss=f"{mean_loss:.3f}")
-            step_losses, step_groups, step_entropy, t_step = [], defaultdict(list), [], time.time()
+            step_losses, step_groups, step_stats = [], defaultdict(list), defaultdict(list)
             if cfg["checkpoint_every_steps"] and global_step % cfg["checkpoint_every_steps"] == 0:
                 save_last(epoch, i + 1, complete=False)
         skip_batches = 0
@@ -378,8 +375,8 @@ def train(cfg, model, run_id, run_dir, resume=False):
             record["best_pck"] = best
             if wandb_run:
                 figure = plot_predictions(cfg, model, val_set, worst_queries(meter.frame(), cfg["n_visual_checks"]))
-                log_evaluation(wandb_run, {**summary, "best_pck": best, "epoch": epoch}, meter, step=global_step,
-                               figure=figure)
+                log_evaluation(wandb_run, summary, meter, step=global_step, figure=figure)
+                wandb_run.summary["best_pck"] = best
                 import matplotlib.pyplot as plt
 
                 plt.close("all")

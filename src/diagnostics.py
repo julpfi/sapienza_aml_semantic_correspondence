@@ -4,6 +4,11 @@ from pathlib import Path
 
 import numpy as np
 
+# Evaluation summary keys kept out of the W&B charts (docs/REVIEW_finetuning.md 2.2). The error-type
+# *_pct values are also left out: the error-type bar plot shows them.
+SUMMARY_ONLY = ("n_queries", "n_pairs")  # constant: run summary only
+NOT_LOGGED = {"score", "sec_per_query", "loss/small", "loss/medium", "loss/large"}
+
 
 def worst_queries(frame, n):
     """query_ids of the n largest errors (d/L)."""
@@ -50,7 +55,9 @@ def log_evaluation(wandb_run, summary, meter, prefix="val", step=None, figure=No
         return
     import wandb
 
-    data = {f"{prefix}/{k}": v for k, v in summary.items() if isinstance(v, (int, float))}
+    numbers = {k: v for k, v in summary.items() if isinstance(v, (int, float))}
+    wandb_run.summary.update({f"{prefix}/{k}": numbers.pop(k) for k in SUMMARY_ONLY if k in numbers})
+    data = {f"{prefix}/{k}": v for k, v in numbers.items() if k not in NOT_LOGGED and not k.endswith("_pct")}
     data[f"{prefix}/per_group"] = wandb.Table(dataframe=meter.per_group().fillna(0))
     errors = meter.error_types().reset_index(names="error_type")
     data[f"{prefix}/error_types"] = wandb.plot.bar(wandb.Table(dataframe=errors), "error_type", "n_queries",

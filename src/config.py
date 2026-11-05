@@ -131,8 +131,8 @@ BASE = {
 
     # --- Matching (Lang) ---
     "matcher": "soft_window",          # "argmax" | "soft_window"
-    "soft_window": 5,                  # window side in (upsampled) cells
-    "soft_temperature": 0.04,
+    "soft_window": 11,                 # window side in (upsampled) cells; 11 / 0.02: +3.1 PCK on run 1 best.pt (REVIEW 2.1)
+    "soft_temperature": 0.02,
     "feat_upsample": 2,                # bilinear upsampling of the target feature map
     "flip_test": False,                # try a mirrored source and keep the better global alignment
     "feature_cache_size": 256,         # images kept in memory during inference
@@ -140,43 +140,47 @@ BASE = {
 
     # --- Training (docs/PRD_finetuning.md section 6; Colab T4) ---
     "train_mode": "finetune",          # "frozen" (train the head) | "finetune" (head + last blocks)
-    "unfreeze_blocks": 2,              # ViT-B: 2 (try 1, 3); ViT-L: 4. 2 was best on SPair-71k (PRD 6.5)
+    "unfreeze_blocks": 1,              # last block + final LayerNorm + head (run 1 used 2: REVIEW 1.1)
     "batch_size": "auto",              # micro-batch: "auto" = largest that fits the GPU x 0.85, or an int
     "effective_batch": 16,             # batch seen by the optimiser (micro-batch x accumulation steps)
     "effective_batch_schedule": None,  # optional ramp {from_epoch: effective_batch}, e.g. {0: 8, 3: 16}
-    "epochs": 7,                       # ~900 updates at batch 16 on ~2,040 training queries
-    "early_stop_patience": 3,          # stop after this many epochs without a better val PCK; 0 = never
-    "lr_head": 1e-4,                   # 10x the backbone: the head is small and starts as the identity
-    "lr_backbone": 1e-5,               # top trained block; try 5e-6 / 2e-5 (PRD 6.3)
+    "epochs": 5,                       # run 1 plateaued after epoch 3 (REVIEW 1.15); ~635 updates at batch 16
+    "early_stop_patience": 2,          # stop after this many epochs without a better val PCK; 0 = never
+    "lr_head": 5e-5,                   # 10x the backbone; halved against the entropy overshoot (REVIEW 1.8)
+    "lr_backbone": 5e-6,               # top trained block; halved (REVIEW 1.8). Run 1: 1e-5
     "layer_decay": 0.75,               # block i from the top gets lr_backbone * layer_decay**i (BEiT/MAE: 0.65-0.8)
     "lr_schedule": "cosine",           # "cosine" (linear warmup + cosine) | "constant" (warmup + constant)
-    "warmup_pct": 0.10,                # share of all updates used for the linear warmup
+    "warmup_pct": 0.20,                # share of all updates used for the linear warmup (REVIEW 1.8)
     "min_warmup_steps": 30,
     "min_lr_ratio": 0.01,              # cosine ends at this fraction of the peak lr
     "weight_decay": 0.05,              # Lang; never applied to LayerNorm weights and biases
-    "grad_clip": 1.0,                  # Lang
+    "grad_clip": 20.0,                 # spike guard above the normal norm (~11, max 19.6 in run 1); 1.0 clipped every update (REVIEW 1.9)
     "amp": True,                       # fp16 autocast + GradScaler on CUDA (the T4 has no bf16); ignored on CPU
     "loss_temperature": 0.03,          # Lang ft_temperature; try 0.02 / 0.05
     "label_sigma": 1.0,                # Gaussian label width in patches (0 = one-hot); Lang ft_label_sigma
     "checkpoint_every_steps": 150,     # last.pt every N updates (~10 min of ViT-B on a T4); 0 = end of epoch only
     "val_every_epoch": True,
     "train_group_bins": [100.0, 300.0],  # object size L (px) limits of the small / medium / large groups
+    "peak_mass_window": 5,             # train/peak_mass: probability inside this many cells around the best cell
 
     # --- Augmentation (train only; source and target images are augmented separately) ---
+    # Very light (REVIEW 1.14): only aug_image_prob of the images enter the crop/rotation/colour steps
+    # below, and a crop removes at most 10% of the side. About 9.5% of the images change; run 1: 96%.
     "flip_augment": True,              # Lang ft_pair_flip_aug (both images, keeps left/right consistent)
     "flip_augment_prob": 0.5,
-    "aug_rotation_deg": 15.0,          # max rotation; 0 = off
+    "aug_image_prob": 0.10,            # share of images that go through the steps below; 0 = off
+    "aug_rotation_deg": 10.0,          # max rotation; 0 = off
     "aug_rotation_prob": 0.5,
-    "aug_color_jitter": 0.3,           # brightness / contrast / saturation strength; 0 = off
-    "aug_hue_jitter": 0.05,
+    "aug_color_jitter": 0.2,           # brightness / contrast / saturation strength; 0 = off
+    "aug_hue_jitter": 0.02,
     "aug_color_prob": 0.8,
-    "aug_grayscale_prob": 0.1,
-    "aug_crop_scale": [0.7, 1.0],      # random crop side as a fraction of the image side
+    "aug_grayscale_prob": 0.05,
+    "aug_crop_scale": [0.9, 1.0],      # random crop side as a fraction of the image side
     "aug_crop_prob": 0.5,
-    "aug_blur_prob": 0.1,
+    "aug_blur_prob": 0.05,
     "aug_edge_margin": 14,             # px in resized space: points closer to the border reject the augmentation
     "aug_max_tries": 3,
-    "label_jitter": 0.5,               # std of the noise on target labels, in patches (GeoAware-SC); 0 = off
+    "label_jitter": 0.25,              # std of the noise on target labels, in patches (GeoAware-SC); 0 = off. Run 1: 0.5
 
     # --- Evaluation ---
     "pck_alpha": 0.1,                  # competition metric: PCK@0.10

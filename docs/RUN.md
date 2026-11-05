@@ -1,7 +1,9 @@
 # RUN.md: how to run the project
 
-How to set up the project, run every step, and submit, locally, in Colab or on Kaggle.
-The repo layout and what moved where are in [docs/REORGANIZATION.md](docs/REORGANIZATION.md).
+How to set up the project, run every step and submit, locally, in Colab or on Kaggle; how the "run" files fit
+together; the fine-tuning hyperparameters; and how to read the W&B charts.
+The repo layout and what moved where are in [REORGANIZATION.md](REORGANIZATION.md). The analysis of the first
+fine-tuning run is in [REVIEW_finetuning.md](REVIEW_finetuning.md).
 
 ## 1. What the pipeline does
 
@@ -9,15 +11,16 @@ For each query (source image, target image, point on the source), it predicts th
 point on the target. The score is PCK@0.10 (see `.claude/CLAUDE.md`).
 
 ```text
-image ──► square resize 644 px ──► DINOv2-B/14 (frozen, facebook/dinov2-base) ──► 46×46 patch features
-      ──► head (identity by default) ──► cosine similarity of the source point vs every target cell
-      ──► 2× upsampling + 5×5 soft-argmax ──► (x, y) in original target pixels
+image ──► square resize 644 px ──► DINOv2-B/14 (facebook/dinov2-base) ──► 46×46 patch features
+      ──► head (linear, identity at start) ──► cosine similarity of the source point vs every target cell
+      ──► 2× upsampling + 11×11 soft-argmax (T = 0.02) ──► (x, y) in original target pixels
 ```
 
 There is one configuration: `BASE` in `src/config.py`. It is set up for fine-tuning on a Colab T4
-(`head="linear"`, `train_mode="finetune"`, last 2 DINOv2 blocks). Before training, the linear head is the
-identity, so `evaluate`/`submit` without `--run` give the Lang baseline (val PCK@0.10 = 40.4). A trained
-model is used with `--run <run_id>`. Every training choice and its reason: [PRD_finetuning.md](PRD_finetuning.md) section 6.
+(`head="linear"`, `train_mode="finetune"`, last DINOv2 block). Before training, the linear head is the
+identity, so `evaluate`/`submit` without `--run` give the frozen DINOv2 baseline (val PCK@0.10 = 40.4 with
+the old 5×5 window, 41.1 with the 11×11 window, checked 2026-11-05). A trained model is used with `--run <run_id>`.
+Hyperparameters: section 8; design reasons: [PRD_finetuning.md](PRD_finetuning.md) section 6.
 
 | What | Where to run |
 |---|---|
@@ -26,7 +29,49 @@ model is used with `--run <run_id>`. Every training choice and its reason: [PRD_
 
 Everything goes through one command: `python run.py --mode train|evaluate|submit`.
 
-## 2. One-time setup (local)
+## 2. The "run" files: why there are several
+
+> **A run** is one execution of one mode (`train`, `evaluate`, `submit`) with one config. It gets an id
+> (`20261103-165509_evaluate`) and its own folder, `outputs/<run_id>/`, which holds the settings that
+> produced it and everything it wrote.
+
+The team works on a laptop, Colab (GPU, training) and Kaggle (offline, submission notebook). The project needs
+one way to run the code on all three, and one record per run, so every score can be traced back to its config,
+code version and checkpoints, even after a Colab disconnect. The files below are **not duplicates**:
+
+| File | What it is for |
+|---|---|
+| `run.py` | **The only entry point.** Parses `--mode/--run/--resume`, checks files and device (`preflight`), creates the run folder, builds the model, calls train / evaluate / submit |
+| `src/utils/run.py` | **Run folder logic:** `prepare_run_dir` (creates or reopens `outputs/<run_id>/`, writes `config.json` once), `load_run_config` (reloads a run's settings; keys added to `BASE` later get their defaults), `git_commit` (`-dirty` with uncommitted changes), `seed_everything` |
+| `docs/RUN.md` | This guide |
+| `colab/run.ipynb` | **Thin Colab runner.** One cell sets `BRANCH/MODE/RUN/RESUME`, then `scripts/colab_setup.py` and `python run.py ...`. No logic |
+| `notebooks/kaggle_run.ipynb` | **Thin Kaggle runner (internet off).** Sets the weights folder and offline mode, then `python run.py --mode submit` |
+| `scripts/colab_setup.py` | Prepares a Colab session **before** `run.py`: pull, install, secrets, Drive, data, weights |
+| `scripts/kaggle_io.py` | Downloads the competition data; uploads a run's `submission.csv` |
+| `scripts/download_weights.py` | Saves the DINOv2 weights locally for offline runs |
+| `src/config.py` | `BASE` and the runtime paths; `output_dir` decides where run folders go |
+
+```text
+          laptop                         Colab                             Kaggle (offline)
+            │                    colab/run.ipynb                     notebooks/kaggle_run.ipynb
+            │                    └─ scripts/colab_setup.py           └─ sets SC_WEIGHTS_DIR, HF_HUB_OFFLINE
+            ▼                              ▼                                    ▼
+  ┌──────────────────────────── python run.py --mode ... ───────────────────────────────┐
+  │ parse_args → load_config (BASE, or the saved config.json for --run/--resume)          │
+  │ preflight (files, GPU) → seed_everything → prepare_run_dir → build_model              │
+  └─────────────┬───────────────┬────────────────┬─────────────────────────────────────┘
+                ▼               ▼                ▼
+          src/train.py    src/evaluate.py   src/predict.py
+                └───────────────┴────────┬───────┘
+                                         ▼
+                              outputs/<run_id>/   (Drive on Colab, /kaggle/working on Kaggle)
+```
+
+The notebooks and scripts only **prepare the machine**; `run.py` and `src/` do **the work**, with the same
+code everywhere. `src/config.py` detects the runtime and resolves `data_dir`, `output_dir`, `weights_dir`,
+`features_dir`.
+
+## 3. One-time setup (local)
 
 ```bash
 # 1. Environment (Miniconda). environment.yml is the only dependency file.
@@ -47,18 +92,12 @@ python scripts/download_weights.py
 
 If `conda` is not found, run `~/miniconda3/bin/conda init bash` once and open a new terminal.
 After a change to `environment.yml`: `conda env update -n advance -f environment.yml --prune`.
+Check the setup without running anything: `python run.py --mode submit --dry-run`.
 
-Check the setup without running anything:
+## 4. The three modes and the run folder
 
-```bash
-python run.py --mode submit --dry-run
-```
-
-## 3. The three modes and the output folder
-
-Every command creates (or reopens) one run folder `outputs/<run_id>/`. `<run_id>` is
-`<UTC time>_<mode>`, for example `20261104-120000_evaluate`, and each command prints it.
-`config.json` (every setting the run used, plus the git commit) is always the first file written.
+Every command creates (or reopens) one run folder `outputs/<run_id>/`, with `<run_id>` =
+`<UTC time>_<mode>`. `config.json` (every setting plus the git commit) is always the first file written.
 
 ```text
 outputs/
@@ -75,110 +114,176 @@ outputs/
     config.json
     history.json       validation PCK, loss and error mix after every epoch
     checkpoints/       last.pt (resume), best.pt (best validation PCK)
-    wandb/
   20261104-140000_submit/
     config.json
     predictions.csv    id,x,y
     submission.csv     id,prediction (the Kaggle file)
 ```
 
-| Command | What it does | Writes in `outputs/<run_id>/` |
-|---|---|---|
-| `python run.py --mode evaluate` | Validation PCK on the held-out pairs, groups, error types, sweep, worst-case visual check, W&B | `summary.json`, `per_query.csv`, `per_group.csv`, `error_types.csv`, `sweep.csv`, `visual_check.png` |
-| `python run.py --mode train` | Train with the `BASE` settings (validation every epoch, best kept) | `history.json`, `checkpoints/last.pt`, `checkpoints/best.pt` |
-| `python run.py --mode train --resume <run_id>` | Continue a training run after a disconnect | same folder |
-| `python run.py --mode evaluate --run <run_id>` | Evaluate a trained run with its `best.pt` | evaluation files, in that run's folder |
-| `python run.py --mode submit` | Test predictions + Kaggle file, checked against `sample_submission.csv` | `predictions.csv`, `submission.csv` |
-| `python run.py --mode submit --run <run_id>` | Same, for a trained run | in that run's folder |
+| Command | What it does |
+|---|---|
+| `python run.py --mode evaluate` | Validation PCK, groups, error types, sweep, worst-case visual check, W&B |
+| `python run.py --mode train` | Train with `BASE` (validation every epoch, best kept) |
+| `python run.py --mode train --resume <run_id>` | **Reopen** the folder and continue from `last.pt` (weights, optimiser, scheduler, AMP scaler, epoch and batch position, random state) |
+| `python run.py --mode evaluate --run <run_id>` | **Reopen** a trained run, load `best.pt`, write the evaluation files into it |
+| `python run.py --mode submit [--run <run_id>]` | Test predictions + Kaggle file, checked against `sample_submission.csv` |
 
-Other flags: `--require-gpu` stops if there is no CUDA GPU; `--dry-run` only prints the settings
-and checks the files.
+Other flags: `--require-gpu` stops if there is no CUDA GPU; `--dry-run` only prints the settings and checks
+the files.
 
-## 4. Typical workflow
+Rules that keep runs comparable:
 
-1. **Validate:** `python run.py --mode evaluate`. Expect PCK@0.10 ≈ 40.4 on 453 queries.
-   The first run writes `splits/val_pair_ids.json`; commit it.
+- `config.json` is written **once**; reopening a run never overwrites it.
+- `--run` and `--resume` use the run's saved `config.json`, **not** the current `BASE`. To score an old run
+  with new inference settings, edit that run's `config.json` (keep a copy). A change of settings for
+  training needs a new run.
+- When a run is reopened on a different commit, `run.py` prints the old and the new commit.
+- Seeds and `cudnn.deterministic` are set before every run.
+
+## 5. Typical workflow
+
+1. **Validate:** `python run.py --mode evaluate`. The split is `splits/val_pair_ids.json` (453 queries).
 2. **Look at the failures:** `visual_check.png` and `per_query.csv` (`dist` = error / L).
 3. **Submit:**
    ```bash
    python run.py --mode submit                    # or --run <run_id> for a trained model
    python scripts/kaggle_io.py submit --file outputs/<run_id>/submission.csv --message "baseline: val 40.4"
    ```
-4. **Train** on Colab (section 5) with `MODE = "train"`. Evaluate and submit the trained run with
-   `--run <run_id>`. The order of runs and what to change between them: PRD_finetuning.md section 6.11.
-5. **Sweep:** `evaluate` writes `sweep.csv`. Copy a better setting into `BASE` by hand only if its gain
-   is larger than its 95% interval (`ci95`). The submission never reads `sweep.csv`.
-   For resolutions/ViT-L, fill `sweep_image_size` / `sweep_model_id` in `BASE` and run evaluate on the T4.
+4. **Train** on Colab (section 6) with `MODE = "train"`. Evaluate and submit with `--run <run_id>`.
+5. **Sweep:** `evaluate` writes `sweep.csv`. Copy a setting into `BASE` only if its gain is larger than its
+   95% interval (`ci95`). The submission never reads `sweep.csv`. For resolutions / ViT-L, fill
+   `sweep_image_size` / `sweep_model_id` in `BASE` and run evaluate on the T4.
 6. **Check the augmentation** after changing an `aug_*` setting: `python scripts/check_augmentation.py`
-   (draws augmented pairs, and checks that no point is moved next to the border).
+   (draws augmented pairs and checks that no point is moved next to the border).
 
-Before every submission (CLAUDE.md): `submit` already checks that every id of
-`sample_submission.csv` appears exactly once, in order, with finite values, and it clips
-points to the image. Still open `visual_check.png` after a change to resizing or coordinates.
+Before every submission (CLAUDE.md): `submit` checks that every id of `sample_submission.csv` appears exactly
+once, in order, with finite values, and clips points to the image. Still open `visual_check.png` after a change
+to resizing or coordinates.
 
-## 5. Colab (training, Phase 2)
+## 6. Colab (training)
 
-Open `colab/run.ipynb` in Colab (File > Open notebook > GitHub, this repo). It only sets options
-and calls the repo code.
+Open `colab/run.ipynb` in Colab (File > Open notebook > GitHub, this repo).
 
 1. Runtime > Change runtime type > **GPU**.
-2. Colab Secrets (key icon), with notebook access allowed: `KAGGLE_USERNAME`, `KAGGLE_KEY`,
-   `WANDB_API_KEY`, `HF_TOKEN`.
-3. In the settings cell, set `BRANCH`, `MODE` (and `RUN` or `RESUME`), then run all cells.
-   The run uses `BASE` from the pushed branch.
+2. Colab Secrets (key icon), with notebook access: `KAGGLE_USERNAME`, `KAGGLE_KEY`, `WANDB_API_KEY`, `HF_TOKEN`.
+3. In the settings cell, set `BRANCH`, `MODE` (and `RUN` or `RESUME`), then run all cells. The run uses `BASE`
+   from the pushed branch.
 
-What happens:
-- `%run scripts/colab_setup.py` pulls the branch and pip-installs `environment.yml`, keeping
-  Colab's own CUDA torch. It also loads the secrets, mounts Drive, downloads the data to
-  `/content/data/raw`, and saves the weights to Drive.
-- Then `python run.py ...` runs. Runs are saved to
-  `MyDrive/aml_semantic_correspondence/outputs/<run_id>`, so they survive a disconnect.
-- **After a disconnect:** set `RESUME = "<run_id>"` and run all cells again. Training continues
-  from `last.pt` (weights, optimiser, scheduler, AMP scaler, epoch and batch position, random
-  state). `last.pt` is also saved every `checkpoint_every_steps` updates (150 by default).
+- `%run scripts/colab_setup.py` pulls the branch, pip-installs `environment.yml` (keeping Colab's CUDA torch),
+  loads the secrets, mounts Drive, downloads the data to `/content/data/raw` and saves the weights to Drive.
+- Runs are saved to `MyDrive/aml_semantic_correspondence/outputs/<run_id>`, so they survive a disconnect.
+- **After a disconnect:** set `RESUME = "<run_id>"` and run all cells again. `last.pt` is also saved every
+  `checkpoint_every_steps` updates (150).
 - The last cell can upload a `submission.csv` to Kaggle.
 
-Training settings (all in `BASE`, reasons in PRD_finetuning.md section 6): last 2 blocks + final LayerNorm +
-identity-initialised linear head; `lr_backbone=1e-5` for the top block with `layer_decay=0.75` per block below,
-`lr_head=1e-4`; linear warmup (10% of updates) then cosine to 1%, set every update; AdamW, weight decay 0.05
-(not on LayerNorm/bias); fp16 AMP (the T4 has no bf16); `effective_batch=16`, with the micro-batch found by a
-GPU memory probe at start-up (`batch_size="auto"`) and gradient accumulation for the rest; 7 epochs with early
-stop after 3 epochs without a better val PCK; flip, crop, rotation, colour, grayscale and blur augmentation.
-The W&B run shows loss (overall, per object size, single/multi target), learning rate per block, batch sizes,
-gradient norm, AMP scale, softmax entropy, GPU memory, and every validation metric per epoch.
+Push your code before running it: Colab pulls from GitHub, and edits made in Colab are lost.
 
-Push your code to the branch before running it: Colab pulls from GitHub, and edits made in Colab are lost.
+## 7. Kaggle (offline submission notebook)
 
-## 6. Kaggle (offline submission notebook)
-
-1. Locally: `python scripts/download_weights.py`, then upload the `weights/` folder as a Kaggle
-   dataset (it must contain `dinov2-base/`).
+1. Locally: `python scripts/download_weights.py`, then upload `weights/` as a Kaggle dataset (with `dinov2-base/`).
 2. Upload the repo as a Kaggle dataset, without `data/raw`, `weights/` or `outputs/`.
-3. Create a notebook from `notebooks/kaggle_run.ipynb`, attach the competition data, the repo
-   dataset and the weights dataset, and turn the internet off.
+3. Create a notebook from `notebooks/kaggle_run.ipynb`, attach the competition data, the repo and the weights
+   datasets, and turn the internet off.
 4. Set `REPO_DIR` and `WEIGHTS_DIR` in the first code cell and run all. `--mode submit` writes
-   `/kaggle/working/submission.csv`, which Kaggle uses as the submission.
+   `/kaggle/working/submission.csv`.
 
-## 7. Settings
+## 8. Fine-tuning hyperparameters
 
-All settings are in `BASE` in `src/config.py`, with a comment on where each value comes from:
+Current `BASE` (run 2) next to run 1 (`20261104-155818_train`, val PCK@0.10 62.9, 66.0 with the new
+inference window). Every change comes from [REVIEW_finetuning.md](REVIEW_finetuning.md) (section in the last
+column).
+
+| Setting | Now | Run 1 | Why |
+|---|---|---|---|
+| **What is trained** | | | |
+| `train_mode` / `head` | finetune / linear | same | head initialised as the identity: update 0 = frozen DINOv2 (1.2) |
+| `unfreeze_blocks` | **1** (block 11 + final LayerNorm + head, 7.68M params) | 2 (14.77M) | fewer weights moved on 2,042 queries; less forgetting |
+| `lr_head` | **5e-5** | 1e-4 | the head moves every cell at once; halved against the entropy overshoot (1.8) |
+| `lr_backbone` | **5e-6** (block 11 and final LayerNorm) | 1e-5 | halved (1.8) |
+| `layer_decay` | 0.75 | same | lr × 0.75 per block below the top; no effect with 1 block |
+| `weight_decay` | 0.05, not on LayerNorm / biases | same | harmless at this lr (1.10) |
+| **Schedule** | | | |
+| `epochs` / `early_stop_patience` | **5 / 2** | 7 / 3 | run 1 plateaued after epoch 3 (1.15) |
+| `effective_batch` | 16 (micro-batch auto) | same | 127 updates per epoch, 635 in total |
+| `warmup_pct` | **0.20** (127 updates = 1 epoch) | 0.10 | slower start against the overshoot (1.8) |
+| `lr_schedule` / `min_lr_ratio` | cosine / 0.01 | same | |
+| `grad_clip` | **20** | 1 | 1 clipped every update; 20 is a spike guard above the normal norm (1.9) |
+| `amp` | fp16 + GradScaler | same | the T4 has no bf16 |
+| **Loss** | | | |
+| `loss_temperature` | 0.03 | same | |
+| `label_sigma` | 1.0 cell | same | |
+| `label_jitter` | **0.25 cell** | 0.5 | less label blur, for small objects (1.12) |
+| **Augmentation** (very light) | | | |
+| `flip_augment_prob` | 0.5 (both images) | same | keeps left/right consistent |
+| `aug_image_prob` (new) | **0.10** | (all images) | only 10% of the images go through the steps below: 9.7% measured change, run 1: 96% (1.14) |
+| `aug_crop_scale` / prob | **[0.9, 1.0]** / 0.5 | [0.7, 1.0] / 0.5 | a crop removes at most 10% of the side |
+| `aug_rotation_deg` / prob | **10°** / 0.5 | 15° / 0.5 | |
+| `aug_color_jitter` / `aug_hue_jitter` / prob | **0.2 / 0.02** / 0.8 | 0.3 / 0.05 / 0.8 | |
+| `aug_grayscale_prob` / `aug_blur_prob` | **0.05 / 0.05** | 0.1 / 0.1 | |
+| **Inference** (validation each epoch and submission) | | | |
+| `soft_window` / `soft_temperature` | **11 / 0.02** | 5 / 0.04 | +3.1 PCK on run 1's `best.pt`, small objects 54.0 → 61.8 (2.1) |
+| `flip_test` | False | same | +0.7 only after fine-tuning, inside the interval |
+
+Run 2 changes several settings at once. If it is worse than run 1 by more than the interval (± 4.5), undo the
+learning rates first, then the augmentation. Compare with run 1 at the same inference settings (66.0).
+
+## 9. Reading the W&B charts
+
+Charts are logged once per optimiser update (train) and once per epoch (val). System charts (GPU, CPU, disk)
+and the console capture are off.
+
+**Training (`train/`, `lr/`, `optim/`, `batch/`)**
+
+| Chart | What it is | How to read it (run 1 values) |
+|---|---|---|
+| `train/loss` | cross-entropy between the predicted cell distribution and the Gaussian bumps on the accepted targets, mean of the update | can never reach 0: its floor is the target entropy H(t) ≈ 3.3–3.5 nats. Run 1: 9 → 4.2. Not comparable with `val/loss` (train has augmentation and label jitter) |
+| `train/loss_ema` | 0.95 EMA of `train/loss` (memory ≈ 20 updates) | the trend; the raw loss is noisier (std 0.17) than an epoch of progress |
+| `train/loss/single`, `/multi` | loss of queries with 1 / several accepted targets | compare each only with itself over time: multi has a higher floor (+ ln K) |
+| `train/softmax_entropy` (+ `_ema`) | entropy H(p) of the predicted distribution; e^H = effective number of cells | ideal ≈ 3.3–3.5 (27–33 cells). Below = overconfident, above = too spread. Run 1: 2.6 at start (confidently wrong), peak 5.8 at the end of the warmup, 4.2 at the end. Run 2 should show a smaller peak |
+| `train/peak_mass` | probability inside a 5 × 5-cell window around the most likely cell | ≈ 1: one peak (maybe wide). Low: mass on several separate peaks (e.g. left and right eye). Tells apart what entropy alone cannot |
+| `train/embed_var_batch` | 1 − ‖mean‖² of the batch's source descriptors | stays near its update-0 value = healthy; a steady fall = different queries get the same descriptor (collapse) |
+| `train/embed_var_cells` | 1 − ‖mean‖² over the cells of each target map | a steady fall together with a rising entropy = the map is flattening (collapse): lower `lr_head` or stop |
+| `lr/head`, `lr/block_11` | learning rate per group | linear warmup over 1 epoch, then cosine to 1% |
+| `batch/effective` | samples per update | flat at 16 without `effective_batch_schedule` |
+| `optim/grad_norm` | total gradient norm before clipping (AMP scale removed) | large because the logits are divided by T = 0.03 (×33): not instability. Run 1: 27–44 in epoch 0, ≈ 11 after |
+| `optim/grad_clipped` | 1 when the norm is above `grad_clip` | with clip 20: ≈ 0 after the warmup. Often 1 = real spikes |
+| `optim/amp_scale` | fp16 GradScaler scale | drops in the first updates (fp16 overflows, updates skipped): normal |
+
+**Validation (`val/`, each epoch)**
+
+| Chart | How to read it |
+|---|---|
+| `val/pck@0.1` | the competition metric on 453 queries; `best.pt` follows it |
+| `val/pck@0.1_ci95` | half-width of the 95% interval (≈ ± 4.5). Optimistic (queries of a pair are correlated); for two settings on the same queries a smaller difference can still be real |
+| `val/pck@0.05`, `val/pck@0.15` | precision (0.05) and coarse correctness (0.15) |
+| `val/pck@0.1/{single, multi}` | multi-target queries score higher although their loss is higher |
+| `val/pck@0.1/{small, medium, large}` | small = L < 100 px, tolerance under one grid cell. Run 1: small fell 61.8 → 54.0 while large rose ≈ 28 points |
+| `val/loss`, `val/loss/{single, multi}` | same loss without augmentation; should go down with PCK |
+| `val/flip_rate` | share of queries where `flip_test` picked the mirrored source (0 while it is off) |
+| `val/error_types` (bar plot) | correct (d < 0.1 L); wrong_keypoint (on another labelled part of the same pair, e.g. left ↔ right eye); near_miss (0.1–0.2 L); other_miss (0.2–0.5 L); far_miss (> 0.5 L). Run 1: fine-tuning removed far / other misses; near_miss (16%) and wrong_keypoint (10%) are what is left |
+| `val/per_group`, `val/dist_hist`, `val/worst_predictions` | table per group, histogram of d / L, the worst 8 queries drawn |
+| `val/sweep` (evaluate only) | matching settings scored on the same features |
+
+Run summary (not charts): `best_pck`, `val/n_queries`, `val/n_pairs`, `micro_batch`, `total_updates`,
+`trainable_params_M`, `probe_peak_gb`, `n_train_queries`.
+
+## 10. Settings
+
 - To change a setting, edit `BASE` and start a new run. The run's `config.json` records it.
-- `--run`/`--resume` reuse the saved `config.json` of that run, not the current `BASE`.
-- Paths depend on the runtime (local, Colab or Kaggle, detected automatically) and can be overridden
-  with `SC_DATA_DIR`, `SC_OUTPUT_DIR`, `SC_WEIGHTS_DIR`, `SC_FEATURES_DIR`, `SC_SPLITS_DIR`.
+- Paths depend on the runtime (detected automatically) and can be overridden with `SC_DATA_DIR`,
+  `SC_OUTPUT_DIR`, `SC_WEIGHTS_DIR`, `SC_FEATURES_DIR`, `SC_SPLITS_DIR`.
 - The model is `facebook/dinov2-base` at a pinned revision (`model_revision`). If `weights/dinov2-base`
   exists, it is loaded from there instead of the Hub.
-- `cache_features_to_disk=True` (frozen mode only) stores backbone features in `data/features/`,
-  so later head trainings skip DINOv2.
+- `cache_features_to_disk=True` (frozen mode, no augmentation) stores backbone features in `data/features/`.
 
-## 8. Troubleshooting
+## 11. Troubleshooting
 
 | Problem | Fix |
 |---|---|
 | `Missing .../train.csv` | `python scripts/kaggle_io.py download` (rules accepted? keys in `.env`?) |
 | `Nothing to train: head='none'` | Set `head="linear"` in `BASE` (it is the default) |
 | `Even a micro-batch of 1 does not fit the GPU` | Lower `image_size` or `unfreeze_blocks`, or set `batch_size` to an int |
-| `fused attention kernels unavailable` | Attention falls back to a slower, memory-hungry kernel: keep `attn_implementation="sdpa"` and fp16 (`amp=True`) |
+| `fused attention kernels unavailable` | Keep `attn_implementation="sdpa"` and fp16 (`amp=True`) |
 | `image_size ... multiple of the patch size` | Use a multiple of 14: 448, 518, 644, 756, 840 |
 | W&B asks to log in | Set `WANDB_API_KEY`, or `wandb_mode="offline"` / `"disabled"` in `BASE` |
 | Colab lost the session | `RESUME = "<run_id>"` in the notebook and run again |

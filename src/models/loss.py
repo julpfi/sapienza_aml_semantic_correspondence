@@ -30,16 +30,34 @@ def target_distribution(trg_xys_resized, h, w, image_size, sigma, device):
     return target / target.sum()
 
 
-def matching_loss(src_feats, trg_feats, src_xy_resized, trg_xys_resized, image_size, temperature, sigma):
+def embedding_variance(feats):
+    """1 - ||mean||^2 of L2-normalised rows [N, C]: 0 when all are equal (collapse), near 1 when spread out."""
+    return 1 - F.normalize(feats.detach().float(), dim=-1).mean(0).pow(2).sum()
+
+
+def peak_mass(probs, h, w, window):
+    """Probability inside a window x window block of cells around the most likely cell.
+    Near 1 for one peak, lower when the mass sits on several separate peaks."""
+    probs = probs.reshape(h, w)
+    row, col = divmod(int(probs.argmax()), w)
+    half = window // 2
+    return probs[max(row - half, 0):row + half + 1, max(col - half, 0):col + half + 1].sum()
+
+
+def matching_loss(src_feats, trg_feats, src_xy_resized, trg_xys_resized, image_size, temperature, sigma,
+                  peak_window=5):
     """src_feats, trg_feats [C, h, w]; src_xy_resized [1, 2]; trg_xys_resized [N, 2].
 
-    Returns (loss, entropy): entropy of the predicted distribution over the cells (detached), which
-    falls when the matching gets sharper.
+    Returns (loss, stats). stats (detached): `entropy` of the predicted distribution over the cells
+    (falls when the matching gets sharper), `peak_mass` (peak_mass()) and `query`, the source descriptor [C].
     """
     _, h, w = trg_feats.shape
     query = sample_point_features(src_feats, src_xy_resized.to(src_feats.device), image_size)  # [1, C]
     logits = (query @ trg_feats.flatten(1)) / temperature  # [1, h*w]
     target = target_distribution(trg_xys_resized, h, w, image_size, sigma, trg_feats.device)
     log_probs = F.log_softmax(logits, -1)
-    entropy = -(log_probs.exp() * log_probs).sum(-1).mean().detach()
-    return -(target[None] * log_probs).sum(-1).mean(), entropy
+    probs = log_probs.exp().detach()
+    stats = {"entropy": -(probs * log_probs.detach()).sum(),
+             "peak_mass": peak_mass(probs[0], h, w, peak_window),
+             "query": query[0].detach()}
+    return -(target[None] * log_probs).sum(-1).mean(), stats

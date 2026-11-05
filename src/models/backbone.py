@@ -92,9 +92,6 @@ class DinoBackbone(nn.Module):
         for p in self.layernorm.parameters():
             p.requires_grad_(True)
 
-    def is_frozen(self):
-        return not any(p.requires_grad for p in self.model.parameters())
-
     def train(self, mode=True):
         """Frozen parts always stay in eval mode; only trainable blocks follow `mode`."""
         super().train(mode)

@@ -33,6 +33,11 @@ def size_group(scale, bins):
     return "small" if scale < bins[0] else "medium" if scale < bins[1] else "large"
 
 
+def target_group(trg_xys):
+    """"single" or "multi": how many accepted targets a query has."""
+    return "single" if len(trg_xys) == 1 else "multi"
+
+
 def edge_distance(trg_xys, wh, scale):
     """How far the most interior accepted target is from the image border, divided by L."""
     trg_xys = np.asarray(trg_xys, dtype=np.float64).reshape(-1, 2)
@@ -81,7 +86,7 @@ class PCKMeter:
             "scale": float(sample["scale"]),
             "size_group": size_group(sample["scale"], cfg["train_group_bins"]),
             "n_accepted": len(self.targets[sample["query_id"]]),
-            "target_group": "single" if len(self.targets[sample["query_id"]]) == 1 else "multi",
+            "target_group": target_group(self.targets[sample["query_id"]]),
             "trg_edge_dist": edge_distance(sample["trg_xys"], sample["trg_img"].size, sample["scale"]),
         })
 
