@@ -114,8 +114,7 @@ def main(argv=None):
         model = load_trained_weights(cfg, model, run_dir)
 
     if args.mode == "evaluate":
-        from data.datasets import build_dataset
-        from src.diagnostics import log_evaluation, plot_worst_predictions
+        from src.diagnostics import log_evaluation
         from src.evaluate import evaluate
         from src.models.matching import FeatureCache
         from src.sweep import describe, run_sweep
@@ -132,8 +131,7 @@ def main(argv=None):
             print(describe(sweep, cfg))
         wandb_run = init_wandb(cfg, run_id, run_dir, job_type="evaluate") if cfg["wandb_evaluate"] else None
         if wandb_run:
-            figure = plot_worst_predictions(cfg, model, build_dataset(cfg, "val"), meter.frame())
-            log_evaluation(wandb_run, summary, meter, figure=figure, sweep=sweep)
+            log_evaluation(wandb_run, summary, meter, sweep=sweep)
             wandb_run.finish()
         return 0
 

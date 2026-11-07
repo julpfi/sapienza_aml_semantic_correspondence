@@ -16,11 +16,13 @@ def _thumbnail(img, max_px):
 
 
 def plot_worst_predictions(cfg, model, dataset, frame):
-    """The n_visual_checks largest errors (d/L): source query, accepted targets and prediction.
+    """The n_visual_checks largest errors (d/L), one row each with four panels:
+    source + query | source CLS map | target + accepted targets and prediction | target CLS map.
 
-    Each row title also shows the cosine similarity of the two images' DINOv2 CLS tokens (global
-    similarity of the pair, current weights). Predictions come from `frame` (PCKMeter.frame()).
-    Returns the figure, or None when nothing can be drawn.
+    CLS map: cosine similarity between the image's DINOv2 CLS token and each patch token (current
+    weights), drawn on the patch grid and stretched to the image, so the points line up. The row
+    title also gives CLS cos(src, trg), the global similarity of the pair. Predictions come from
+    `frame` (PCKMeter.frame()). Returns the figure, or None when nothing can be drawn.
     """
     import matplotlib
 
@@ -33,26 +35,36 @@ def plot_worst_predictions(cfg, model, dataset, frame):
     if rows.empty:
         return None
     model.eval()
-    fig, axes = plt.subplots(len(rows), 2, figsize=(8, 3.6 * len(rows)), dpi=80, squeeze=False)
+    fig, axes = plt.subplots(len(rows), 4, figsize=(14, 3.3 * len(rows)), dpi=80, squeeze=False)
     for ax_row, row in zip(axes, rows.itertuples()):
         s = dataset[index[row.query_id]]
-        cls_cos = float(model.cls_embedding(s["src_img"]) @ model.cls_embedding(s["trg_img"]))
+        src_cls, src_map = model.cls_embedding(s["src_img"])
+        trg_cls, trg_map = model.cls_embedding(s["trg_img"])
         src, f_src = _thumbnail(s["src_img"], cfg["visual_thumb_px"])
         trg, f_trg = _thumbnail(s["trg_img"], cfg["visual_thumb_px"])
+        query = np.asarray(s["src_xy"], dtype=np.float64) * f_src
         pred = np.array([row.pred_x, row.pred_y]) * f_trg
         accepted = np.asarray(s["trg_xys"], dtype=np.float64).reshape(-1, 2) * f_trg
         nearest = accepted[np.linalg.norm(accepted - pred, axis=1).argmin()]
 
-        ax_row[0].imshow(src)
-        ax_row[0].scatter([s["src_xy"][0] * f_src], [s["src_xy"][1] * f_src], c="red", s=50)
+        for ax, img, cls_map in ((ax_row[0:2], src, src_map), (ax_row[2:4], trg, trg_map)):
+            ax[0].imshow(img)
+            h, w = img.shape[:2]
+            ax[1].imshow(cls_map.float().cpu().numpy(), cmap="viridis", interpolation="nearest",
+                         extent=(0, w, h, 0))
+        for ax in ax_row[0:2]:
+            ax.scatter([query[0]], [query[1]], c="red", s=50, edgecolors="white")
+        for ax in ax_row[2:4]:
+            ax.plot([pred[0], nearest[0]], [pred[1], nearest[1]], "w--", lw=1)
+            ax.scatter(accepted[:, 0], accepted[:, 1], c="lime", s=50, edgecolors="black", label="accepted")
+            ax.scatter([pred[0]], [pred[1]], c="red", marker="x", s=80, label="prediction")
+        ax_row[2].legend(loc="lower right", fontsize=7)
+
         category = "" if row.category == "all" else f" | {row.category}"
-        ax_row[0].set_title(f"{row.query_id}{category}\nCLS cos(src, trg) = {cls_cos:.2f}", fontsize=9)
-        ax_row[1].imshow(trg)
-        ax_row[1].plot([pred[0], nearest[0]], [pred[1], nearest[1]], "w--", lw=1)
-        ax_row[1].scatter(accepted[:, 0], accepted[:, 1], c="lime", s=50, label="accepted")
-        ax_row[1].scatter([pred[0]], [pred[1]], c="red", marker="x", s=80, label="prediction")
-        ax_row[1].legend(loc="lower right", fontsize=7)
-        ax_row[1].set_title(f"d/L = {row.dist:.2f} | {row.error_type}", fontsize=9)
+        ax_row[0].set_title(f"{row.query_id}{category}: source", fontsize=9)
+        ax_row[1].set_title(f"source CLS map | CLS cos(src, trg) = {float(src_cls @ trg_cls):.2f}", fontsize=9)
+        ax_row[2].set_title(f"target: d/L = {row.dist:.2f} | {row.error_type}", fontsize=9)
+        ax_row[3].set_title("target CLS map", fontsize=9)
         for ax in ax_row:
             ax.axis("off")
     fig.tight_layout()

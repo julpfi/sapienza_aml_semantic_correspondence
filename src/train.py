@@ -28,7 +28,7 @@ from data.transforms import preprocess_image, to_resized
 from src.augment import augment_sample, augmentation_enabled
 from src.evaluate import evaluate
 from src.metrics import target_group
-from src.models.loss import embedding_variance, matching_loss
+from src.models.loss import matching_loss
 from src.utils.batch_size import fake_samples, find_micro_batch
 from src.utils.checkpoint import (
     checkpoint_path, download_artifact, load_checkpoint, load_model_weights, publish_best, save_checkpoint,
@@ -47,7 +47,8 @@ TRAIN_MODES = ("frozen", "finetune")
 def configure_trainable(model, cfg):
     """Set requires_grad for the mode and return the optimiser parameter groups, "lr" = peak lr.
 
-    Head: lr_head. Every unfrozen block and the final LayerNorm: lr_backbone.
+    Block i from the top: lr_backbone * layer_decay**i. Final LayerNorm: lr_backbone.
+    Head (only runs whose config has head != "none"): lr_head.
     """
     if cfg["train_mode"] not in TRAIN_MODES:
         raise ValueError(f"train_mode must be one of {TRAIN_MODES}, got {cfg['train_mode']!r}")
@@ -58,15 +59,16 @@ def configure_trainable(model, cfg):
         p.requires_grad_(True)
 
     blocks = list(model.backbone.blocks)
-    parts = [("head", model.head, cfg["lr_head"])]
-    parts += [(f"block_{i}", block, cfg["lr_backbone"]) for i, block in enumerate(blocks)]
+    parts = [("head", model.head, cfg["lr_head"])] if cfg["head"] != "none" else []
+    parts += [(f"block_{len(blocks) - 1 - depth}", block, cfg["lr_backbone"] * cfg["layer_decay"] ** depth)
+              for depth, block in enumerate(reversed(blocks))]
     parts.append(("layernorm", model.backbone.layernorm, cfg["lr_backbone"]))
     groups = [{"name": name, "params": [p for p in module.parameters() if p.requires_grad], "lr": lr}
               for name, module, lr in parts]
     groups = [g for g in groups if g["params"]]
     if not groups:
-        raise ValueError("Nothing to train: head='none' with train_mode='frozen'. In BASE (src/config.py), "
-                         "set head='linear' (or 'mlp'), optionally with train_mode='finetune'.")
+        raise ValueError("Nothing to train: train_mode='frozen' with head='none'. Use train_mode='finetune' "
+                         "in BASE (src/config.py), or add head='linear' and lr_head for a head-only run.")
     return groups
 
 
@@ -94,14 +96,14 @@ def plan_updates(n_batches, micro, cfg):
 # ---------------------------------------------------------------------------
 # Forward pass and loss
 # ---------------------------------------------------------------------------
-def _backbone_features(model, samples, side, cfg, store, use_amp):
+def _backbone_features(model, samples, side, cfg, store):
     """Frozen backbone features [B, C, h, w] for one side ("src"/"trg"), using the disk store."""
     feats = [store.get(s[f"{side}_image"]) if store else None for s in samples]
     todo = [i for i, f in enumerate(feats) if f is None]
     if todo:
         x = torch.cat([preprocess_image(samples[i][f"{side}_img"], cfg) for i in todo]).to(model.device)
-        with torch.no_grad(), torch.autocast("cuda", dtype=torch.float16, enabled=use_amp):
-            new = model.backbone(x).float()
+        with torch.no_grad():
+            new = model.backbone(x)
         for i, f in zip(todo, new):
             feats[i] = f
             if store:
@@ -109,17 +111,15 @@ def _backbone_features(model, samples, side, cfg, store, use_amp):
     return torch.stack([f.float().to(model.device) for f in feats])
 
 
-def compute_features(model, samples, cfg, store, use_amp):
-    """Matching features (src, trg), each [B, C, h, w], with gradients where needed."""
+def compute_features(model, samples, cfg, store):
+    """Matching features (src, trg), each [B, C, h, w], in fp32, with gradients where needed."""
     if cfg["train_mode"] == "frozen":
-        src = _backbone_features(model, samples, "src", cfg, store, use_amp)
-        trg = _backbone_features(model, samples, "trg", cfg, store, use_amp)
-        with torch.autocast("cuda", dtype=torch.float16, enabled=use_amp):
-            return model.head(src).float(), model.head(trg).float()
+        src = _backbone_features(model, samples, "src", cfg, store)
+        trg = _backbone_features(model, samples, "trg", cfg, store)
+        return model.head(src), model.head(trg)
     xs = torch.cat([preprocess_image(s["src_img"], cfg) for s in samples]).to(model.device)
     xt = torch.cat([preprocess_image(s["trg_img"], cfg) for s in samples]).to(model.device)
-    with torch.autocast("cuda", dtype=torch.float16, enabled=use_amp):
-        return model(xs).float(), model(xt).float()
+    return model(xs), model(xt)
 
 
 def jitter_labels(trg_resized, image_size, n_cells, std_cells):
@@ -130,25 +130,20 @@ def jitter_labels(trg_resized, image_size, n_cells, std_cells):
     return (trg_resized + noise).clamp(0, image_size)
 
 
-def batch_loss(model, samples, cfg, store, use_amp, train=True):
-    """Per-sample losses [B] and detached diagnostics (docs/RUN.md section 9): softmax_entropy per
-    sample [B] and embed_var_batch over the source descriptors of the batch (float)."""
-    src_feats, trg_feats = compute_features(model, samples, cfg, store, use_amp)
+def batch_loss(model, samples, cfg, store, train=True):
+    """Per-sample losses [B] and the detached softmax entropy per sample [B] (docs/RUN.md section 9)."""
+    src_feats, trg_feats = compute_features(model, samples, cfg, store)
     size = cfg["image_size"]
-    losses, stats = [], []
+    losses, entropies = [], []
     for b, s in enumerate(samples):
         trg = to_resized(s["trg_xys"], s["trg_img"].size, size)
         if train:
             trg = jitter_labels(trg, size, trg_feats.shape[-1], cfg["label_jitter"])
-        loss, sample_stats = matching_loss(src_feats[b], trg_feats[b],
-                                           to_resized(s["src_xy"][None], s["src_img"].size, size), trg, size,
-                                           cfg["loss_temperature"], cfg["label_sigma"])
+        loss, entropy = matching_loss(src_feats[b], trg_feats[b],
+                                      to_resized(s["src_xy"][None], s["src_img"].size, size), trg, cfg)
         losses.append(loss)
-        stats.append(sample_stats)
-    return torch.stack(losses), {
-        "softmax_entropy": torch.stack([st["entropy"] for st in stats]),
-        "embed_var_batch": float(embedding_variance(torch.stack([st["query"] for st in stats]))),
-    }
+        entropies.append(entropy)
+    return torch.stack(losses), torch.stack(entropies)
 
 
 # ---------------------------------------------------------------------------
@@ -167,7 +162,7 @@ def _set_rng_state(state):
         torch.cuda.set_rng_state_all(state["cuda"])
 
 
-def choose_micro_batch(model, cfg, groups, use_amp):
+def choose_micro_batch(model, cfg, groups):
     """batch_size: an int, or "auto" = probe the GPU with real forward+backward steps."""
     if cfg["batch_size"] != "auto":
         return int(cfg["batch_size"]), None
@@ -175,7 +170,7 @@ def choose_micro_batch(model, cfg, groups, use_amp):
 
     def run_step(b):
         model.train()
-        losses, _ = batch_loss(model, fake_samples(b, cfg, rng), cfg, None, use_amp, train=False)
+        losses, _ = batch_loss(model, fake_samples(b, cfg, rng), cfg, None, train=False)
         losses.mean().backward()
         for g in groups:
             for p in g["params"]:
@@ -195,13 +190,12 @@ def train(cfg, model, run_id, run_dir, resume=False):
     groups = configure_trainable(model, cfg)
     n_trainable = sum(p.numel() for g in groups for p in g["params"])
     print(f"train_mode={cfg['train_mode']} head={cfg['head']}: {n_trainable / 1e6:.2f}M trainable parameters")
-    use_amp = cfg["amp"] and model.device.type == "cuda"
 
     ckpt = load_checkpoint(checkpoint_path(run_dir, "last.pt")) if resume else None
     if ckpt is not None and "micro_batch" in ckpt:
         micro, probe_peak = ckpt["micro_batch"], None  # same batches as before the disconnect
     else:
-        micro, probe_peak = choose_micro_batch(model, cfg, groups, use_amp)
+        micro, probe_peak = choose_micro_batch(model, cfg, groups)
     seed_everything(cfg["seed"], cfg["deterministic"])  # the probe used random numbers
 
     optimizer = torch.optim.AdamW(groups, weight_decay=cfg["weight_decay"])
@@ -216,7 +210,6 @@ def train(cfg, model, run_id, run_dir, resume=False):
     # Other OneCycleLR arguments at their defaults: div_factor 25, final_div_factor 1e4, cosine anneal.
     scheduler = torch.optim.lr_scheduler.OneCycleLR(optimizer, max_lr=[g["lr"] for g in groups],
                                                     total_steps=total_updates, pct_start=cfg["warmup_pct"])
-    scaler = torch.amp.GradScaler("cuda", enabled=use_amp)
     augment = cfg["flip_augment"] or augmentation_enabled(cfg)
     store = None
     if cfg["cache_features_to_disk"] and cfg["train_mode"] == "frozen":
@@ -230,7 +223,6 @@ def train(cfg, model, run_id, run_dir, resume=False):
         load_model_weights(model, ckpt["model"])
         optimizer.load_state_dict(ckpt["optimizer"])
         scheduler.load_state_dict(ckpt["scheduler"])
-        scaler.load_state_dict(ckpt["scaler"])
         _set_rng_state(ckpt["rng"])
         global_step, best, history = ckpt["global_step"], ckpt["best_score"], ckpt["history"]
         stale = ckpt.get("stale_epochs", 0)
@@ -257,7 +249,7 @@ def train(cfg, model, run_id, run_dir, resume=False):
     def save_last(epoch, batches_done, complete):
         save_checkpoint({
             "model": trainable_state(model), "optimizer": optimizer.state_dict(),
-            "scheduler": scheduler.state_dict(), "scaler": scaler.state_dict(),
+            "scheduler": scheduler.state_dict(),
             "epoch": epoch, "batches_done": batches_done, "epoch_complete": complete, "micro_batch": micro,
             "global_step": global_step, "best_score": best, "history": history, "stale_epochs": stale,
             "rng": _rng_state(), "config": cfg, "git_commit": git_commit(),
@@ -274,7 +266,7 @@ def train(cfg, model, run_id, run_dir, resume=False):
                             generator=torch.Generator().manual_seed(cfg["seed"] + epoch))
         model.train()
         optimizer.zero_grad(set_to_none=True)
-        step_losses, step_groups, step_stats = [], defaultdict(list), defaultdict(list)
+        step_losses, step_entropies, step_groups = [], [], defaultdict(list)
         t_epoch = time.time()
         progress = tqdm(loader, desc=f"epoch {epoch}", total=n_batches)
         for i, samples in enumerate(progress):
@@ -283,13 +275,12 @@ def train(cfg, model, run_id, run_dir, resume=False):
             groups_of = [target_group(s["trg_xys"]) for s in samples]  # before augmentation drops targets
             if augment:
                 samples = [augment_sample(s, cfg) for s in samples]
-            losses, stats = batch_loss(model, samples, cfg, store, use_amp)
+            losses, entropies = batch_loss(model, samples, cfg, store)
             loss = losses.mean()
             if torch.isfinite(loss):
-                scaler.scale(loss / accum).backward()
+                (loss / accum).backward()
                 step_losses += losses.detach().tolist()
-                step_stats["softmax_entropy"] += stats["softmax_entropy"].tolist()
-                step_stats["embed_var_batch"].append(stats["embed_var_batch"])
+                step_entropies += entropies.tolist()
                 for value, group in zip(losses.detach().tolist(), groups_of):
                     step_groups[group].append(value)
             else:
@@ -298,31 +289,28 @@ def train(cfg, model, run_id, run_dir, resume=False):
                 continue
 
             # One optimiser update.
-            scaler.unscale_(optimizer)
             grad_norm = float(torch.nn.utils.clip_grad_norm_([p for g in groups for p in g["params"]],
                                                              cfg["grad_clip"]))
-            scaler.step(optimizer)
-            scaler.update()
+            optimizer.step()
             optimizer.zero_grad(set_to_none=True)
             lrs = {f"lr/{g['name']}": g["lr"] for g in optimizer.param_groups}  # lr of this update
             scheduler.step()
             global_step += 1
             mean_loss = float(np.mean(step_losses)) if step_losses else float("nan")
-            means = {k: float(np.mean(v)) for k, v in step_stats.items()}
+            entropy = float(np.mean(step_entropies)) if step_entropies else None
             if step_losses:  # 0.95 EMAs: memory of ~20 updates
                 loss_ema = mean_loss if loss_ema is None else 0.95 * loss_ema + 0.05 * mean_loss
-                entropy = means["softmax_entropy"]
                 entropy_ema = entropy if entropy_ema is None else 0.95 * entropy_ema + 0.05 * entropy
             if wandb_run:
-                log = {"train/loss": mean_loss, "train/loss_ema": loss_ema, "train/softmax_entropy_ema": entropy_ema,
-                       **{f"train/{k}": v for k, v in means.items()},
+                log = {"train/loss": mean_loss, "train/loss_ema": loss_ema,
+                       "train/softmax_entropy": entropy, "train/softmax_entropy_ema": entropy_ema,
                        **{f"train/loss/{g}": float(np.mean(v)) for g, v in step_groups.items()},
                        **lrs,
                        "batch/effective": micro * accum,
                        "optim/grad_norm": grad_norm, "optim/grad_clipped": float(grad_norm > cfg["grad_clip"])}
                 wandb_run.log({k: v for k, v in log.items() if v is not None}, step=global_step)
             progress.set_postfix(loss=f"{mean_loss:.3f}")
-            step_losses, step_groups, step_stats = [], defaultdict(list), defaultdict(list)
+            step_losses, step_entropies, step_groups = [], [], defaultdict(list)
             if cfg["checkpoint_every_steps"] and global_step % cfg["checkpoint_every_steps"] == 0:
                 save_last(epoch, i + 1, complete=False)
         skip_batches = 0

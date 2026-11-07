@@ -27,8 +27,7 @@ def validation_loss(cfg, model, sample, cache):
     size = cfg["image_size"]
     loss, _ = matching_loss(src_feats.float(), trg_feats.float(),
                             to_resized(sample["src_xy"][None], sample["src_img"].size, size),
-                            to_resized(sample["trg_xys"], sample["trg_img"].size, size),
-                            size, cfg["loss_temperature"], cfg["label_sigma"])
+                            to_resized(sample["trg_xys"], sample["trg_img"].size, size), cfg)
     return float(loss)
 
 

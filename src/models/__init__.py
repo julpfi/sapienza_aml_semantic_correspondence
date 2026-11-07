@@ -19,7 +19,7 @@ class CorrespondenceModel(nn.Module):
         self.cfg = cfg
         self.backbone = DinoBackbone(cfg)
         in_dim = self.backbone.model.config.hidden_size
-        out_dim = in_dim if cfg["head"] == "none" or cfg["head_dim"] is None else cfg["head_dim"]
+        out_dim = in_dim if cfg["head"] == "none" or cfg.get("head_dim") is None else cfg["head_dim"]
         self.head = ProjectionHead(cfg["head"], in_dim, out_dim)
 
     @property
@@ -44,8 +44,10 @@ class CorrespondenceModel(nn.Module):
 
     @torch.no_grad()
     def cls_embedding(self, img):
-        """L2-normalised DINOv2 CLS token [C] of one PIL image, with the eval preprocessing."""
-        return self.backbone.cls(preprocess_image(img, self.cfg).to(self.device))[0]
+        """DINOv2 CLS token [C] (L2-normalised) of one PIL image and its CLS-patch cosine map [h, w],
+        with the eval preprocessing."""
+        cls, cls_map = self.backbone.cls(preprocess_image(img, self.cfg).to(self.device))
+        return cls[0], cls_map[0]
 
     def new_cache(self):
         return FeatureCache(self.cfg["feature_cache_size"])

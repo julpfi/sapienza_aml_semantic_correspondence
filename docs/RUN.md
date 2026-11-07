@@ -11,13 +11,13 @@ point on the target. The score is PCK@0.10 (see `.claude/CLAUDE.md`).
 
 ```text
 image ──► square resize 644 px ──► DINOv2-B/14 (facebook/dinov2-base) ──► 46×46 patch features
-      ──► head (linear, identity at start) ──► cosine similarity of the source point vs every target cell
+      ──► cosine similarity of the source point vs every target cell
       ──► 2× upsampling + 9×9 soft-argmax (T = 0.04) ──► (x, y) in original target pixels
 ```
 
 There is one configuration: `BASE` in `src/config.py`. It is set up for fine-tuning on a Colab T4
-(`head="linear"`, `train_mode="finetune"`, last two DINOv2 blocks). Before training, the linear head is the
-identity, so `evaluate`/`submit` without `--run` give the frozen DINOv2 baseline (val PCK@0.10 = 40.4 with
+(`train_mode="finetune"`, last two DINOv2 blocks, no head, as in Lang). Without a trained `best.pt`,
+`evaluate`/`submit` give the frozen DINOv2 baseline (val PCK@0.10 = 40.4 with
 the old 5×5 window, 41.1 with the 11×11 window, checked 2026-11-05). A trained model is used with `--run <run_id>`.
 Hyperparameters: section 8.
 
@@ -118,9 +118,9 @@ outputs/
 
 | Command | What it does |
 |---|---|
-| `python run.py --mode evaluate` | Validation PCK, groups and error types (printed), sweep, W&B (with the worst predictions) |
+| `python run.py --mode evaluate` | Validation PCK, groups and error types (printed), sweep, W&B (no image: the worst-prediction plot is drawn by `train` only) |
 | `python run.py --mode train` | Train with `BASE` (validation every epoch, best kept) |
-| `python run.py --mode train --resume <run_id>` | **Reopen** the folder and continue from `last.pt` (weights, optimiser, scheduler, AMP scaler, epoch and batch position, random state) |
+| `python run.py --mode train --resume <run_id>` | **Reopen** the folder and continue from `last.pt` (weights, optimiser, scheduler, epoch and batch position, random state) |
 | `python run.py --mode evaluate --run <run_id>` | **Reopen** a trained run, load `best.pt`, write the evaluation files into it |
 | `python run.py --mode submit [--run <run_id>]` | Test predictions + Kaggle file, checked against `sample_submission.csv` |
 
@@ -139,7 +139,7 @@ Rules that keep runs comparable:
 ## 5. Typical workflow
 
 1. **Validate:** `python run.py --mode evaluate`. The split is `splits/val_pair_ids.json` (453 queries).
-2. **Look at the failures:** `val/worst_predictions` on W&B and `per_query.csv` (`dist` = error / L).
+2. **Look at the failures:** `per_query.csv` (`dist` = error / L); for a trained run, `val/worst_predictions` on W&B.
 3. **Submit:**
    ```bash
    python run.py --mode submit                    # or --run <run_id> for a trained model
@@ -193,21 +193,21 @@ sections of [REVIEW_finetuning.md](REVIEW_finetuning.md).
 | Setting | Now | Notes |
 |---|---|---|
 | **What is trained** | | |
-| `train_mode` / `head` | finetune / linear | head initialised as the identity: update 0 = frozen DINOv2 (1.2) |
-| `unfreeze_blocks` | 2 (blocks 10 and 11 + final LayerNorm + head) | 2 was the best setting for ViT-B on SPair-71k (1.1) |
+| `train_mode` / `head` | finetune / **none** (was linear) | as in Lang: blocks 10–11 already adapt the features; a 768×768 head at lr 1e-3 changed every patch at once and could flatten the maps. Update 0 = frozen DINOv2 |
+| `unfreeze_blocks` | 2 (blocks 10 and 11 + final LayerNorm) | 2 was the best setting for ViT-B on SPair-71k (1.1) |
 | **Optimiser** | AdamW + OneCycleLR | |
-| `lr_head` (peak) | 1e-3 | the identity head is the cheap part to move; watch `train/softmax_entropy` and `embed_var_batch` (collapse) |
-| `lr_backbone` (peak) | 1e-5 for **both** blocks 10 and 11 and the final LayerNorm | no layer-wise decay |
+| `lr_backbone` (peak) / `layer_decay` | 1e-5 (block 11 and final LayerNorm) / 0.75 | block i from the top gets lr_backbone × 0.75^i: block 10 at 7.5e-6 |
 | `weight_decay` | 0.05, on every trained parameter | plain AdamW |
 | **Schedule** | | |
 | `epochs` / `early_stop_patience` | 5 / 3 | |
-| `effective_batch` | 16 (micro-batch auto) | optional ramp: `effective_batch_schedule` |
+| `effective_batch` | **8** (was 16; Lang 4), micro-batch auto | ≈ 255 updates per epoch instead of ≈ 127: with Adam each update moves the weights by about the lr, so 2× more movement per epoch. Optional ramp: `effective_batch_schedule` |
 | `warmup_pct` | **0.05** (was 0.10) | OneCycleLR `pct_start`: lr rises from peak / 25 to the peak over the first 5% of the updates, then cosine to peak / 25e4. Shorter warmup against the entropy overshoot at the end of the warmup (1.8) |
 | `grad_clip` | 1.0 | max total gradient norm; the normal norm is ≈ 11, so most updates are clipped (1.9) |
-| `amp` | fp16 + GradScaler | the T4 has no bf16 |
+| precision | fp32 (no AMP) | as in the Lang pipeline; slower and more memory than fp16, so the auto micro-batch is smaller |
 | **Loss** | | |
-| `loss_temperature` | 0.03 | |
-| `label_sigma` | 1.0 cell | |
+| `loss` | `soft_ce` | `soft_ce`: cross-entropy with Gaussian bumps on all accepted targets (entropy floor ≈ 3.3–3.5). `marginal` (Lang): −log of the probability on the cells within `marginal_radius` (1 cell) of any target; lets the model commit to one target with a sharp peak. `val/loss` is on a different scale for each: compare by val PCK |
+| `loss_temperature` | **0.02** (was 0.03) | both losses; lower = sharper, lowers `train/softmax_entropy` (not comparable with runs at 0.03) |
+| `label_sigma` | 1.0 cell | `soft_ce` only |
 | `label_jitter` | 0.5 cell | noise on the target labels |
 | **Augmentation** (every training image) | | |
 | `flip_augment_prob` | 0.5 (both images) | keeps left/right consistent |
@@ -232,10 +232,9 @@ and the console capture are off.
 | `train/loss_ema` | 0.95 EMA of `train/loss` (memory ≈ 20 updates) | the trend; the raw loss is noisier (std 0.17) than an epoch of progress |
 | `train/loss/single`, `/multi` | loss of queries with 1 / several accepted targets | compare each only with itself over time: multi has a higher floor (+ ln K) |
 | `train/softmax_entropy` (+ `_ema`) | entropy H(p) of the predicted distribution; e^H = effective number of cells | ideal ≈ 3.3–3.5 (27–33 cells). Below = overconfident, above = too spread. Run 1: 2.6 at start (confidently wrong), peak 5.8 at the end of the warmup, 4.2 at the end. Run 2 should show a smaller peak |
-| `train/embed_var_batch` | 1 − ‖mean‖² of the batch's source descriptors | stays near its update-0 value = healthy; a steady fall = different queries get the same descriptor (collapse) |
-| `lr/head`, `lr/block_10`, `lr/block_11`, `lr/layernorm` | learning rate per group, used by that update | OneCycleLR: rises over the first `warmup_pct` (5%) of the updates, then cosine to ≈ 0 |
+| `lr/block_10`, `lr/block_11`, `lr/layernorm` | learning rate per group, used by that update | OneCycleLR: rises over the first `warmup_pct` (5%) of the updates, then cosine to ≈ 0 |
 | `batch/effective` | samples per update | flat at 16 without `effective_batch_schedule` |
-| `optim/grad_norm` | total gradient norm before clipping (AMP scale removed) | large because the logits are divided by T = 0.03 (×33): not instability. Run 1: 27–44 in epoch 0, ≈ 11 after |
+| `optim/grad_norm` | total gradient norm before clipping | large because the logits are divided by T = 0.03 (×33): not instability. Run 1: 27–44 in epoch 0, ≈ 11 after |
 | `optim/grad_clipped` | 1 when the norm is above `grad_clip` | with clip 1 and a normal norm ≈ 11 it is mostly 1; read `grad_norm` for spikes instead |
 
 **Validation (`val/`, each epoch)**
@@ -250,7 +249,7 @@ and the console capture are off.
 | `val/flip_rate` | share of queries where `flip_test` picked the mirrored source (0 while it is off) |
 | `val/error_types` (bar plot) | correct (d < 0.1 L); wrong_keypoint (on another labelled part of the same pair, e.g. left ↔ right eye); near_miss (0.1–0.2 L); other_miss (0.2–0.5 L); far_miss (> 0.5 L). Run 1: fine-tuning removed far / other misses; near_miss (16%) and wrong_keypoint (10%) are what is left |
 | `val/per_group`, `val/dist_hist` | table per single/multi target and edge distance, histogram of d / L |
-| `val/worst_predictions` | the `n_visual_checks` (4) largest errors: source with the query point; target with the accepted targets (green), the prediction (red ×) and a dashed line to the nearest accepted target. Titles: d / L, error type and **CLS cos(src, trg)**, the cosine of the two images' DINOv2 CLS tokens with the current weights. A low CLS cosine = the two images look globally different (viewpoint, appearance); a high one with a large error = a local mistake (e.g. left/right) |
+| `val/worst_predictions` (train only) | the `n_visual_checks` (4) largest errors, four panels per row: source with the query point | source CLS map | target with the accepted targets (green), the prediction (red ×) and a dashed line to the nearest accepted target | target CLS map. CLS map = cosine between the image's DINOv2 CLS token and each patch token (current weights), on the patch grid. Bright = the parts the global embedding describes, normally the object. A query or target point on a dark area = a part the global embedding ignores. Titles: d / L, error type and CLS cos(src, trg), the global similarity of the pair |
 | `val/sweep` (evaluate only) | matching settings scored on the same features |
 
 Run summary (not charts): `best_pck`, `micro_batch`, `total_updates`, `trainable_params_M`, `probe_peak_gb`,
@@ -270,9 +269,9 @@ Run summary (not charts): `best_pck`, `micro_batch`, `total_updates`, `trainable
 | Problem | Fix |
 |---|---|
 | `Missing .../train.csv` | `python scripts/kaggle_io.py download` (rules accepted? keys in `.env`?) |
-| `Nothing to train: head='none'` | Set `head="linear"` in `BASE` (it is the default) |
+| `Nothing to train: train_mode='frozen' with head='none'` | Use `train_mode="finetune"` (the default) |
 | `Even a micro-batch of 1 does not fit the GPU` | Lower `image_size` or `unfreeze_blocks`, or set `batch_size` to an int |
-| `fused attention kernels unavailable` | Keep `attn_implementation="sdpa"` and fp16 (`amp=True`) |
+| `fused attention kernels unavailable` | Keep `attn_implementation="sdpa"` |
 | `image_size ... multiple of the patch size` | Use a multiple of 14: 448, 518, 644, 756, 840 |
 | W&B asks to log in | Set `WANDB_API_KEY`, or `wandb_mode="offline"` / `"disabled"` in `BASE` |
 | Colab lost the session | `RESUME = "<run_id>"` in the notebook and run again |

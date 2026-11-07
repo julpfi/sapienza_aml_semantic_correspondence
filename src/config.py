@@ -123,10 +123,10 @@ BASE = {
     "image_mean": [0.485, 0.456, 0.406],
     "image_std": [0.229, 0.224, 0.225],
     "attn_implementation": "sdpa",     # transformers attention; "sdpa" uses the memory-efficient kernel on a T4
-    # An untrained "linear"/"mlp" head is the identity, so these defaults give the Lang baseline until
-    # a trained best.pt is loaded with --run.
-    "head": "linear",                  # "none" (identity, = Lang) | "linear" | "mlp" (needed to train)
-    "head_dim": None,                  # output size of the "linear" head; None = backbone width (identity start)
+    # No trained head (as in Lang): the matching features are the DINOv2 features themselves, so
+    # without a trained best.pt (--run) the model is the frozen baseline. Runs trained with a head keep
+    # loading through their own config.json (head, head_dim, lr_head).
+    "head": "none",
 
     # --- Matching (Lang) ---
     "matcher": "soft_window",          # "argmax" | "soft_window"
@@ -138,22 +138,29 @@ BASE = {
     "cache_features_to_disk": False,   # frozen mode only: store backbone features in features_dir
 
     # --- Training (Colab T4; docs/RUN.md section 8) ---
-    "train_mode": "finetune",          # "frozen" (train the head) | "finetune" (head + last blocks)
-    "unfreeze_blocks": 2,              # blocks 10 and 11 + final LayerNorm + head (ViT-B)
+    "train_mode": "finetune",          # last DINOv2 blocks + final LayerNorm ("frozen" needs a head: old runs only)
+    "unfreeze_blocks": 2,              # blocks 10 and 11 + final LayerNorm (ViT-B)
     "batch_size": "auto",              # micro-batch: "auto" = largest that fits the GPU x 0.85, or an int
-    "effective_batch": 16,             # batch seen by the optimiser (micro-batch x accumulation steps)
+    "effective_batch": 8,              # batch seen by the optimiser (micro-batch x accumulation steps); Lang: 4
     "effective_batch_schedule": None,  # optional ramp {from_epoch: effective_batch}, e.g. {0: 8, 3: 16}
-    "epochs": 5,                       # ~900 updates at batch 16 on ~2,040 training queries
+    "epochs": 5,                       # ~255 updates per epoch at effective batch 8 on ~2,040 training queries
     "early_stop_patience": 3,          # stop after this many epochs without a better val PCK; 0 = never
     # Optimiser: AdamW + OneCycleLR; each lr below is the peak (max_lr) of its parameter group.
-    "lr_head": 1e-3,                   # the head is small and starts as the identity
-    "lr_backbone": 1e-5,               # every unfrozen block (10 and 11) and the final LayerNorm
+    "lr_backbone": 1e-5,               # top trained block (11) and the final LayerNorm
+    "layer_decay": 0.75,               # block i from the top gets lr_backbone * layer_decay**i (block 10: 7.5e-6)
     "warmup_pct": 0.05,                # OneCycleLR pct_start: share of the updates spent warming up (was 0.10)
     "weight_decay": 0.05,              # AdamW, on every trained parameter
     "grad_clip": 1.0,                  # Lang
-    "amp": True,                       # fp16 autocast + GradScaler on CUDA (the T4 has no bf16); ignored on CPU
-    "loss_temperature": 0.03,          # Lang ft_temperature; try 0.02 / 0.05
-    "label_sigma": 1.0,                # Gaussian label width in patches (0 = one-hot); Lang ft_label_sigma
+    # Loss (src/models/loss.py explains both):
+    #   "soft_ce"  = cross-entropy with Gaussian bumps on ALL accepted targets (v2). Floor > 0, the
+    #                probability is spread over every target, so softmax_entropy stays around 3.3-3.5.
+    #   "marginal" = Lang: -log of the probability on the cells within marginal_radius of ANY target.
+    #                The model may commit to one target with a sharp peak: lower entropy. Ignores label_sigma.
+    # val/loss of the two is on different scales: compare runs of different losses by val PCK only.
+    "loss": "soft_ce",                 # "soft_ce" | "marginal"
+    "loss_temperature": 0.02,          # softmax temperature of the loss (both); lower = sharper (was 0.03)
+    "label_sigma": 1.0,                # soft_ce: Gaussian label width in patches (0 = one-hot)
+    "marginal_radius": 1.0,            # marginal: positive cells within this many cells of a target (Lang: 1.0)
     "checkpoint_every_steps": 0,       # last.pt every N updates; 0 = end of epoch only (fewer Drive writes)
     "val_every_epoch": True,
 

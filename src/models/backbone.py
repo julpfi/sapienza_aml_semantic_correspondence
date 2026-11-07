@@ -110,8 +110,13 @@ class DinoBackbone(nn.Module):
         return self.layernorm(hidden[self.feature_layer])
 
     def cls(self, x):
-        """L2-normalised CLS token [B, C] (global image embedding)."""
-        return F.normalize(self.tokens(x)[:, 0], dim=-1)
+        """L2-normalised CLS token [B, C] (global image embedding) and its cosine similarity with every
+        patch token [B, S/p, S/p] (where the global embedding is in the image)."""
+        tokens = F.normalize(self.tokens(x), dim=-1)
+        cls = tokens[:, 0]
+        size = x.shape[-1] // self.patch_size
+        cls_map = torch.einsum("bnc,bc->bn", tokens[:, self.num_prefix:], cls).reshape(-1, size, size)
+        return cls, cls_map
 
     def forward(self, x):
         size = x.shape[-1] // self.patch_size
