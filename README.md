@@ -4,7 +4,7 @@ Our code for the [AML Challenge](https://www.kaggle.com/competitions/aml-challen
 given a source image, a target image and a source point, predict the corresponding point in the
 target image. The score is PCK@0.10.
 
-**How to run everything: [docs/RUN.md](docs/RUN.md).** Fine-tuning plan: [docs/PRD_finetuning.md](docs/PRD_finetuning.md).
+**How to run everything: [docs/RUN.md](docs/RUN.md).**
 Analysis of the first fine-tuning run: [docs/REVIEW_finetuning.md](docs/REVIEW_finetuning.md).
 
 ## Structure
@@ -28,7 +28,7 @@ splits/             Shared validation split, tracked in git
 scripts/            Colab setup, weight download, Kaggle download/submit, augmentation check
 colab/run.ipynb     Thin Colab runner
 notebooks/          Thin Kaggle runner (offline)
-docs/               RUN.md (how to run, hyperparameters, W&B charts), PRD_finetuning.md, REVIEW_finetuning.md, reorganization guide
+docs/               RUN.md (how to run, hyperparameters, W&B charts), REVIEW_finetuning.md
 outputs/<run_id>/   One folder per run: config.json + results (not in git), see RUN.md
 ```
 

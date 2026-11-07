@@ -3,7 +3,7 @@
 Matching settings (flip_test, soft_window, soft_temperature) act after the backbone, so the features
 of each (model_id, image_size) are computed once per image pair and reused for every combination.
 The result is <run_dir>/sweep.csv. The submission never reads it: copying the best row into BASE
-(src/config.py) is a manual, reviewed change (docs/PRD_finetuning.md section 4.3).
+(src/config.py) is a manual, reviewed change.
 """
 
 import itertools
@@ -105,5 +105,5 @@ def describe(table, cfg):
     if len(current):
         gain = best[key] - current.iloc[0][key]
         lines.append(f"Best vs current BASE: {gain:+.2f} points. Change BASE by hand only if the gain is "
-                     "larger than the interval (ci95) - see docs/PRD_finetuning.md section 6.10.")
+                     "larger than the interval (ci95).")
     return "\n".join(lines)

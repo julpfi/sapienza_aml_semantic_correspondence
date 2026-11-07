@@ -5,7 +5,7 @@ Loss: soft-label matching loss with all accepted targets (src/models/loss.py).
 Data: train.csv minus the validation pairs, augmented by src/augment.py.
 Batch: the optimiser sees `effective_batch` samples per update = micro-batch x accumulation steps.
     The micro-batch is the largest that fits the GPU (batch_size="auto", src/utils/batch_size.py).
-Optimiser: AdamW (weight_decay) with OneCycleLR over all updates: warmup for lr_pct_start of them
+Optimiser: AdamW (weight_decay) with OneCycleLR over all updates: warmup for warmup_pct of them
     from max_lr / 25, then cosine down to max_lr / 25e4. One parameter group (own max_lr) per trained part.
 Each epoch: validation PCK (history.json, W&B), best.pt when it improves, last.pt for --resume,
 early stop after `early_stop_patience` epochs without improvement.
@@ -47,7 +47,7 @@ TRAIN_MODES = ("frozen", "finetune")
 def configure_trainable(model, cfg):
     """Set requires_grad for the mode and return the optimiser parameter groups, "lr" = peak lr.
 
-    Head: lr_head. Block i from the top: lr_backbone * layer_decay**i. Final LayerNorm: lr_backbone.
+    Head: lr_head. Every unfrozen block and the final LayerNorm: lr_backbone.
     """
     if cfg["train_mode"] not in TRAIN_MODES:
         raise ValueError(f"train_mode must be one of {TRAIN_MODES}, got {cfg['train_mode']!r}")
@@ -59,8 +59,7 @@ def configure_trainable(model, cfg):
 
     blocks = list(model.backbone.blocks)
     parts = [("head", model.head, cfg["lr_head"])]
-    parts += [(f"block_{len(blocks) - 1 - depth}", block, cfg["lr_backbone"] * cfg["layer_decay"] ** depth)
-              for depth, block in enumerate(reversed(blocks))]
+    parts += [(f"block_{i}", block, cfg["lr_backbone"]) for i, block in enumerate(blocks)]
     parts.append(("layernorm", model.backbone.layernorm, cfg["lr_backbone"]))
     groups = [{"name": name, "params": [p for p in module.parameters() if p.requires_grad], "lr": lr}
               for name, module, lr in parts]
@@ -132,9 +131,8 @@ def jitter_labels(trg_resized, image_size, n_cells, std_cells):
 
 
 def batch_loss(model, samples, cfg, store, use_amp, train=True):
-    """Per-sample losses [B] and detached diagnostics (docs/RUN.md section 9):
-    softmax_entropy and peak_mass per sample [B]; embed_var_batch over the source descriptors of the
-    batch and embed_var_cells over the cells of each target map (mean over the batch), as floats."""
+    """Per-sample losses [B] and detached diagnostics (docs/RUN.md section 9): softmax_entropy per
+    sample [B] and embed_var_batch over the source descriptors of the batch (float)."""
     src_feats, trg_feats = compute_features(model, samples, cfg, store, use_amp)
     size = cfg["image_size"]
     losses, stats = [], []
@@ -144,14 +142,12 @@ def batch_loss(model, samples, cfg, store, use_amp, train=True):
             trg = jitter_labels(trg, size, trg_feats.shape[-1], cfg["label_jitter"])
         loss, sample_stats = matching_loss(src_feats[b], trg_feats[b],
                                            to_resized(s["src_xy"][None], s["src_img"].size, size), trg, size,
-                                           cfg["loss_temperature"], cfg["label_sigma"], cfg["peak_mass_window"])
+                                           cfg["loss_temperature"], cfg["label_sigma"])
         losses.append(loss)
         stats.append(sample_stats)
     return torch.stack(losses), {
         "softmax_entropy": torch.stack([st["entropy"] for st in stats]),
-        "peak_mass": torch.stack([st["peak_mass"] for st in stats]),
         "embed_var_batch": float(embedding_variance(torch.stack([st["query"] for st in stats]))),
-        "embed_var_cells": float(np.mean([float(embedding_variance(f.flatten(1).T)) for f in trg_feats])),
     }
 
 
@@ -194,7 +190,7 @@ def choose_micro_batch(model, cfg, groups, use_amp):
 # ---------------------------------------------------------------------------
 def train(cfg, model, run_id, run_dir, resume=False):
     """Train and return the best validation PCK (in percent)."""
-    from src.diagnostics import log_evaluation, plot_predictions, worst_queries
+    from src.diagnostics import log_evaluation, plot_worst_predictions
 
     groups = configure_trainable(model, cfg)
     n_trainable = sum(p.numel() for g in groups for p in g["params"])
@@ -219,7 +215,7 @@ def train(cfg, model, run_id, run_dir, resume=False):
           f"{[micro * a for a, _ in plan]} per epoch, {total_updates} updates in {cfg['epochs']} epochs")
     # Other OneCycleLR arguments at their defaults: div_factor 25, final_div_factor 1e4, cosine anneal.
     scheduler = torch.optim.lr_scheduler.OneCycleLR(optimizer, max_lr=[g["lr"] for g in groups],
-                                                    total_steps=total_updates, pct_start=cfg["lr_pct_start"])
+                                                    total_steps=total_updates, pct_start=cfg["warmup_pct"])
     scaler = torch.amp.GradScaler("cuda", enabled=use_amp)
     augment = cfg["flip_augment"] or augmentation_enabled(cfg)
     store = None
@@ -243,6 +239,8 @@ def train(cfg, model, run_id, run_dir, resume=False):
         else:
             start_epoch, skip_batches = ckpt["epoch"], ckpt["batches_done"]
         print(f"Resumed from last.pt: epoch {start_epoch}, skipping {skip_batches} batches, best {best:.2f}")
+    elif resume and (run_dir / "history.json").exists() and checkpoint_path(run_dir, "best.pt").exists():
+        raise RuntimeError(f"Run {run_id} already finished (last.pt is deleted at the end); start a new run.")
     elif resume:
         print("No last.pt yet: starting this run from the beginning.")
     elif cfg["init_artifact"]:
@@ -291,9 +289,7 @@ def train(cfg, model, run_id, run_dir, resume=False):
                 scaler.scale(loss / accum).backward()
                 step_losses += losses.detach().tolist()
                 step_stats["softmax_entropy"] += stats["softmax_entropy"].tolist()
-                step_stats["peak_mass"] += stats["peak_mass"].tolist()
                 step_stats["embed_var_batch"].append(stats["embed_var_batch"])
-                step_stats["embed_var_cells"].append(stats["embed_var_cells"])
                 for value, group in zip(losses.detach().tolist(), groups_of):
                     step_groups[group].append(value)
             else:
@@ -323,8 +319,7 @@ def train(cfg, model, run_id, run_dir, resume=False):
                        **{f"train/loss/{g}": float(np.mean(v)) for g, v in step_groups.items()},
                        **lrs,
                        "batch/effective": micro * accum,
-                       "optim/grad_norm": grad_norm, "optim/grad_clipped": float(grad_norm > cfg["grad_clip"]),
-                       "optim/amp_scale": scaler.get_scale() if use_amp else 1.0}
+                       "optim/grad_norm": grad_norm, "optim/grad_clipped": float(grad_norm > cfg["grad_clip"])}
                 wandb_run.log({k: v for k, v in log.items() if v is not None}, step=global_step)
             progress.set_postfix(loss=f"{mean_loss:.3f}")
             step_losses, step_groups, step_stats = [], defaultdict(list), defaultdict(list)
@@ -346,12 +341,9 @@ def train(cfg, model, run_id, run_dir, resume=False):
                 stale += 1
             record["best_pck"] = best
             if wandb_run:
-                figure = plot_predictions(cfg, model, val_set, worst_queries(meter.frame(), cfg["n_visual_checks"]))
+                figure = plot_worst_predictions(cfg, model, val_set, meter.frame())
                 log_evaluation(wandb_run, summary, meter, step=global_step, figure=figure)
                 wandb_run.summary["best_pck"] = best
-                import matplotlib.pyplot as plt
-
-                plt.close("all")
         history.append(record)
         (run_dir / "history.json").write_text(json.dumps(history, indent=2) + "\n")
         save_last(epoch, n_batches, complete=True)
@@ -362,6 +354,8 @@ def train(cfg, model, run_id, run_dir, resume=False):
     if not cfg["val_every_epoch"]:  # keep the final weights as "best"
         save_checkpoint({"model": trainable_state(model), "epoch": cfg["epochs"] - 1, "score": None,
                          "config": cfg, "git_commit": git_commit()}, run_dir, "best.pt")
+    # Training is over, so last.pt (weights + optimiser state, ~3x best.pt) is no longer needed on Drive.
+    checkpoint_path(run_dir, "last.pt").unlink(missing_ok=True)
     if wandb_run:
         wandb_run.summary["best_pck"] = best
         if cfg["publish_best"]:

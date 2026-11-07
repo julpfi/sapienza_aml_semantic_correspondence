@@ -102,13 +102,19 @@ class DinoBackbone(nn.Module):
                     block.train()
         return self
 
+    def tokens(self, x):
+        """All layer-normed tokens [B, prefix + patches, C] of block `feature_layer` (CLS first)."""
+        if self.feature_layer == -1:
+            return self.model(pixel_values=x).last_hidden_state  # already layer-normed
+        hidden = self.model(pixel_values=x, output_hidden_states=True).hidden_states
+        return self.layernorm(hidden[self.feature_layer])
+
+    def cls(self, x):
+        """L2-normalised CLS token [B, C] (global image embedding)."""
+        return F.normalize(self.tokens(x)[:, 0], dim=-1)
+
     def forward(self, x):
         size = x.shape[-1] // self.patch_size
-        if self.feature_layer == -1:
-            tokens = self.model(pixel_values=x).last_hidden_state  # already layer-normed
-        else:
-            hidden = self.model(pixel_values=x, output_hidden_states=True).hidden_states
-            tokens = self.layernorm(hidden[self.feature_layer])
-        tokens = tokens[:, self.num_prefix:, :]
+        tokens = self.tokens(x)[:, self.num_prefix:, :]
         feats = tokens.transpose(1, 2).reshape(x.shape[0], -1, size, size)
         return F.normalize(feats, dim=1)

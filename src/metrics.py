@@ -50,8 +50,8 @@ def confidence_interval(pck_percent, n):
 class PCKMeter:
     """Collects one row per query and reports PCK at several alphas (in percent).
 
-    Each row also has the groups and the error type used by the evaluation report
-    (docs/PRD_finetuning.md section 4.2): single/multi target, edge distance, and
+    Each row also has the groups and the error type used by the evaluation report:
+    single/multi target, edge distance, and
     near miss / wrong keypoint / far miss for wrong predictions.
     """
 

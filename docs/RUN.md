@@ -12,14 +12,14 @@ point on the target. The score is PCK@0.10 (see `.claude/CLAUDE.md`).
 ```text
 image ──► square resize 644 px ──► DINOv2-B/14 (facebook/dinov2-base) ──► 46×46 patch features
       ──► head (linear, identity at start) ──► cosine similarity of the source point vs every target cell
-      ──► 2× upsampling + 11×11 soft-argmax (T = 0.02) ──► (x, y) in original target pixels
+      ──► 2× upsampling + 9×9 soft-argmax (T = 0.04) ──► (x, y) in original target pixels
 ```
 
 There is one configuration: `BASE` in `src/config.py`. It is set up for fine-tuning on a Colab T4
-(`head="linear"`, `train_mode="finetune"`, last DINOv2 block). Before training, the linear head is the
+(`head="linear"`, `train_mode="finetune"`, last two DINOv2 blocks). Before training, the linear head is the
 identity, so `evaluate`/`submit` without `--run` give the frozen DINOv2 baseline (val PCK@0.10 = 40.4 with
 the old 5×5 window, 41.1 with the 11×11 window, checked 2026-11-05). A trained model is used with `--run <run_id>`.
-Hyperparameters: section 8; design reasons: [PRD_finetuning.md](PRD_finetuning.md) section 6.
+Hyperparameters: section 8.
 
 | What | Where to run |
 |---|---|
@@ -104,15 +104,12 @@ outputs/
     config.json        settings of this run
     summary.json       PCK@0.05/0.10/0.15 (+95% interval), score, error mix, PCK and loss per group
     per_query.csv      one row per validation query (prediction, dist = error / L, groups, error type)
-    per_group.csv      PCK per single/multi target and per edge distance
-    error_types.csv    correct / near_miss / wrong_keypoint / far_miss / other_miss
     sweep.csv          flip_test x soft_window x soft_temperature (x image_size x model): a report only
-    visual_check.png   the worst validation predictions
-    wandb/             local W&B files (charts are online at wandb.ai)
+    wandb/             only for offline W&B runs (to sync later); online runs keep these files off Drive
   20261104-130000_train/
     config.json
     history.json       validation PCK, loss and error mix after every epoch
-    checkpoints/       last.pt (resume), best.pt (best validation PCK)
+    checkpoints/       best.pt (best validation PCK); last.pt only while training (deleted at the end)
   20261104-140000_submit/
     config.json
     predictions.csv    id,x,y
@@ -121,7 +118,7 @@ outputs/
 
 | Command | What it does |
 |---|---|
-| `python run.py --mode evaluate` | Validation PCK, groups, error types, sweep, worst-case visual check, W&B |
+| `python run.py --mode evaluate` | Validation PCK, groups and error types (printed), sweep, W&B (with the worst predictions) |
 | `python run.py --mode train` | Train with `BASE` (validation every epoch, best kept) |
 | `python run.py --mode train --resume <run_id>` | **Reopen** the folder and continue from `last.pt` (weights, optimiser, scheduler, AMP scaler, epoch and batch position, random state) |
 | `python run.py --mode evaluate --run <run_id>` | **Reopen** a trained run, load `best.pt`, write the evaluation files into it |
@@ -142,7 +139,7 @@ Rules that keep runs comparable:
 ## 5. Typical workflow
 
 1. **Validate:** `python run.py --mode evaluate`. The split is `splits/val_pair_ids.json` (453 queries).
-2. **Look at the failures:** `visual_check.png` and `per_query.csv` (`dist` = error / L).
+2. **Look at the failures:** `val/worst_predictions` on W&B and `per_query.csv` (`dist` = error / L).
 3. **Submit:**
    ```bash
    python run.py --mode submit                    # or --run <run_id> for a trained model
@@ -156,8 +153,8 @@ Rules that keep runs comparable:
    (draws augmented pairs and checks that no point is moved next to the border).
 
 Before every submission (CLAUDE.md): `submit` checks that every id of `sample_submission.csv` appears exactly
-once, in order, with finite values, and clips points to the image. Still open `visual_check.png` after a change
-to resizing or coordinates.
+once, in order, with finite values, and clips points to the image. Still look at `val/worst_predictions` after
+a change to resizing or coordinates.
 
 ## 6. Colab (training)
 
@@ -171,8 +168,10 @@ Open `colab/run.ipynb` in Colab (File > Open notebook > GitHub, this repo).
 - `%run scripts/colab_setup.py` pulls the branch, pip-installs `environment.yml` (keeping Colab's CUDA torch),
   loads the secrets, mounts Drive, downloads the data to `/content/data/raw` and saves the weights to Drive.
 - Runs are saved to `MyDrive/aml_semantic_correspondence/outputs/<run_id>`, so they survive a disconnect.
-- **After a disconnect:** set `RESUME = "<run_id>"` and run all cells again. `last.pt` is also saved every
-  `checkpoint_every_steps` updates (150).
+- **After a disconnect:** set `RESUME = "<run_id>"` and run all cells again. `last.pt` is saved at the end of
+  every epoch (`checkpoint_every_steps = 0`; set a number of updates to also save inside an epoch) and is
+  deleted when the training ends, to keep Drive small. Drive keeps overwritten files in its bin for 30 days,
+  so empty the bin if the space runs out.
 - The last cell can upload a `submission.csv` to Kaggle.
 
 Push your code before running it: Colab pulls from GitHub, and edits made in Colab are lost.
@@ -188,43 +187,37 @@ Push your code before running it: Colab pulls from GitHub, and edits made in Col
 
 ## 8. Fine-tuning hyperparameters
 
-Current `BASE` (run 2) next to run 1 (`20261104-155818_train`, val PCK@0.10 62.9, 66.0 with the new
-inference window). The numbers in the last column are sections of [REVIEW_finetuning.md](REVIEW_finetuning.md).
-The optimiser settings (learning rates, schedule, clip) were chosen afterwards and replace the ones in its 2.4.
+Current `BASE`. Run 1 is `20261104-155818_train` (val PCK@0.10 62.9); the numbers in the last column are
+sections of [REVIEW_finetuning.md](REVIEW_finetuning.md).
 
-| Setting | Now | Run 1 | Why |
-|---|---|---|---|
-| **What is trained** | | | |
-| `train_mode` / `head` | finetune / linear | same | head initialised as the identity: update 0 = frozen DINOv2 (1.2) |
-| `unfreeze_blocks` | **1** (block 11 + final LayerNorm + head, 7.68M params) | 2 (14.77M) | fewer weights moved on 2,042 queries; less forgetting |
-| **Optimiser** | AdamW + OneCycleLR | AdamW + warmup/cosine | |
-| `lr_head` (peak) | **1e-3** | 1e-4 | 100× the backbone: the identity head is the cheap part to move. Watch the entropy and `embed_var_cells` (collapse) |
-| `lr_backbone` (peak) | 1e-5 (block 11 and final LayerNorm) | same | |
-| `layer_decay` | 0.75 | same | lr × 0.75 per block below the top; no effect with 1 block |
-| `weight_decay` | 0.05, **on every trained parameter** | 0.05, not on LayerNorm / biases | plain AdamW; negligible at these learning rates (1.10) |
-| **Schedule** | | | |
-| `epochs` / `early_stop_patience` | **5 / 2** | 7 / 3 | run 1 plateaued after epoch 3 (1.15) |
-| `effective_batch` | 16 (micro-batch auto) | same | 127 updates per epoch, 635 in total |
-| `lr_pct_start` | **0.05** (≈ 32 updates) | warmup 10% | OneCycleLR: lr rises from peak / 25 to the peak, then cosine to peak / 25e4. Other arguments at their defaults, so AdamW's beta1 also cycles 0.95 → 0.85 → 0.95 |
-| `grad_clip` | **5** | 1 | the normal norm is ≈ 11 (run 1), so most updates are clipped: `grad_clipped` ≈ 1 is expected (1.9) |
-| `amp` | fp16 + GradScaler | same | the T4 has no bf16 |
-| **Loss** | | | |
-| `loss_temperature` | 0.03 | same | |
-| `label_sigma` | 1.0 cell | same | |
-| `label_jitter` | **0.25 cell** | 0.5 | less label blur, for small objects (1.12) |
-| **Augmentation** (very light) | | | |
-| `flip_augment_prob` | 0.5 (both images) | same | keeps left/right consistent |
-| `aug_image_prob` (new) | **0.10** | (all images) | only 10% of the images go through the steps below: 9.7% measured change, run 1: 96% (1.14) |
-| `aug_crop_scale` / prob | **[0.9, 1.0]** / 0.5 | [0.7, 1.0] / 0.5 | a crop removes at most 10% of the side |
-| `aug_rotation_deg` / prob | **10°** / 0.5 | 15° / 0.5 | |
-| `aug_color_jitter` / `aug_hue_jitter` / prob | **0.2 / 0.02** / 0.8 | 0.3 / 0.05 / 0.8 | |
-| `aug_grayscale_prob` / `aug_blur_prob` | **0.05 / 0.05** | 0.1 / 0.1 | |
-| **Inference** (validation each epoch and submission) | | | |
-| `soft_window` / `soft_temperature` | **11 / 0.02** | 5 / 0.04 | +3.1 PCK on run 1's `best.pt`, small objects 54.0 → 61.8 (2.1) |
-| `flip_test` | False | same | +0.7 only after fine-tuning, inside the interval |
-
-Run 2 changes several settings at once. If it is worse than run 1 by more than the interval (± 4.5), undo the
-head learning rate first (1e-3 → 1e-4), then the augmentation. Compare with run 1 at the same inference settings (66.0).
+| Setting | Now | Notes |
+|---|---|---|
+| **What is trained** | | |
+| `train_mode` / `head` | finetune / linear | head initialised as the identity: update 0 = frozen DINOv2 (1.2) |
+| `unfreeze_blocks` | 2 (blocks 10 and 11 + final LayerNorm + head) | 2 was the best setting for ViT-B on SPair-71k (1.1) |
+| **Optimiser** | AdamW + OneCycleLR | |
+| `lr_head` (peak) | 1e-3 | the identity head is the cheap part to move; watch `train/softmax_entropy` and `embed_var_batch` (collapse) |
+| `lr_backbone` (peak) | 1e-5 for **both** blocks 10 and 11 and the final LayerNorm | no layer-wise decay |
+| `weight_decay` | 0.05, on every trained parameter | plain AdamW |
+| **Schedule** | | |
+| `epochs` / `early_stop_patience` | 5 / 3 | |
+| `effective_batch` | 16 (micro-batch auto) | optional ramp: `effective_batch_schedule` |
+| `warmup_pct` | **0.05** (was 0.10) | OneCycleLR `pct_start`: lr rises from peak / 25 to the peak over the first 5% of the updates, then cosine to peak / 25e4. Shorter warmup against the entropy overshoot at the end of the warmup (1.8) |
+| `grad_clip` | 1.0 | max total gradient norm; the normal norm is ≈ 11, so most updates are clipped (1.9) |
+| `amp` | fp16 + GradScaler | the T4 has no bf16 |
+| **Loss** | | |
+| `loss_temperature` | 0.03 | |
+| `label_sigma` | 1.0 cell | |
+| `label_jitter` | 0.5 cell | noise on the target labels |
+| **Augmentation** (every training image) | | |
+| `flip_augment_prob` | 0.5 (both images) | keeps left/right consistent |
+| `aug_crop_scale` / prob | [0.7, 1.0] / 0.5 | |
+| `aug_rotation_deg` / prob | 15° / 0.5 | |
+| `aug_color_jitter` / `aug_hue_jitter` / prob | 0.3 / 0.05 / 0.8 | |
+| `aug_grayscale_prob` / `aug_blur_prob` | 0.1 / 0.1 | |
+| **Inference** (validation each epoch and submission) | | |
+| `soft_window` / `soft_temperature` | 9 / 0.04 | the sweep in `evaluate` scores other values |
+| `flip_test` | False | |
 
 ## 9. Reading the W&B charts
 
@@ -239,14 +232,11 @@ and the console capture are off.
 | `train/loss_ema` | 0.95 EMA of `train/loss` (memory ≈ 20 updates) | the trend; the raw loss is noisier (std 0.17) than an epoch of progress |
 | `train/loss/single`, `/multi` | loss of queries with 1 / several accepted targets | compare each only with itself over time: multi has a higher floor (+ ln K) |
 | `train/softmax_entropy` (+ `_ema`) | entropy H(p) of the predicted distribution; e^H = effective number of cells | ideal ≈ 3.3–3.5 (27–33 cells). Below = overconfident, above = too spread. Run 1: 2.6 at start (confidently wrong), peak 5.8 at the end of the warmup, 4.2 at the end. Run 2 should show a smaller peak |
-| `train/peak_mass` | probability inside a 5 × 5-cell window around the most likely cell | ≈ 1: one peak (maybe wide). Low: mass on several separate peaks (e.g. left and right eye). Tells apart what entropy alone cannot |
 | `train/embed_var_batch` | 1 − ‖mean‖² of the batch's source descriptors | stays near its update-0 value = healthy; a steady fall = different queries get the same descriptor (collapse) |
-| `train/embed_var_cells` | 1 − ‖mean‖² over the cells of each target map | a steady fall together with a rising entropy = the map is flattening (collapse): lower `lr_head` or stop |
-| `lr/head`, `lr/block_11`, `lr/layernorm` | learning rate per group, used by that update | OneCycleLR: rises over the first 5% of the updates, then cosine to ≈ 0 |
+| `lr/head`, `lr/block_10`, `lr/block_11`, `lr/layernorm` | learning rate per group, used by that update | OneCycleLR: rises over the first `warmup_pct` (5%) of the updates, then cosine to ≈ 0 |
 | `batch/effective` | samples per update | flat at 16 without `effective_batch_schedule` |
 | `optim/grad_norm` | total gradient norm before clipping (AMP scale removed) | large because the logits are divided by T = 0.03 (×33): not instability. Run 1: 27–44 in epoch 0, ≈ 11 after |
-| `optim/grad_clipped` | 1 when the norm is above `grad_clip` | with clip 5 and a normal norm ≈ 11 it is mostly 1; read `grad_norm` for spikes instead |
-| `optim/amp_scale` | fp16 GradScaler scale | drops in the first updates (fp16 overflows, updates skipped): normal |
+| `optim/grad_clipped` | 1 when the norm is above `grad_clip` | with clip 1 and a normal norm ≈ 11 it is mostly 1; read `grad_norm` for spikes instead |
 
 **Validation (`val/`, each epoch)**
 
@@ -259,11 +249,12 @@ and the console capture are off.
 | `val/loss`, `val/loss/{single, multi}` | same loss without augmentation; should go down with PCK |
 | `val/flip_rate` | share of queries where `flip_test` picked the mirrored source (0 while it is off) |
 | `val/error_types` (bar plot) | correct (d < 0.1 L); wrong_keypoint (on another labelled part of the same pair, e.g. left ↔ right eye); near_miss (0.1–0.2 L); other_miss (0.2–0.5 L); far_miss (> 0.5 L). Run 1: fine-tuning removed far / other misses; near_miss (16%) and wrong_keypoint (10%) are what is left |
-| `val/per_group`, `val/dist_hist`, `val/worst_predictions` | table per single/multi target and edge distance, histogram of d / L, the worst 8 queries drawn |
+| `val/per_group`, `val/dist_hist` | table per single/multi target and edge distance, histogram of d / L |
+| `val/worst_predictions` | the `n_visual_checks` (4) largest errors: source with the query point; target with the accepted targets (green), the prediction (red ×) and a dashed line to the nearest accepted target. Titles: d / L, error type and **CLS cos(src, trg)**, the cosine of the two images' DINOv2 CLS tokens with the current weights. A low CLS cosine = the two images look globally different (viewpoint, appearance); a high one with a large error = a local mistake (e.g. left/right) |
 | `val/sweep` (evaluate only) | matching settings scored on the same features |
 
-Run summary (not charts): `best_pck`, `val/n_queries`, `val/n_pairs`, `micro_batch`, `total_updates`,
-`trainable_params_M`, `probe_peak_gb`, `n_train_queries`.
+Run summary (not charts): `best_pck`, `micro_batch`, `total_updates`, `trainable_params_M`, `probe_peak_gb`,
+`n_train_queries`.
 
 ## 10. Settings
 

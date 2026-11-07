@@ -38,7 +38,7 @@ def locate(sim, image_size, matcher, window, temperature):
     rows, cols = raw_rows.clamp(0, h - 1), raw_cols.clamp(0, w - 1)
     patch = sim[torch.arange(n)[:, None, None], rows[:, :, None], cols[:, None, :]]  # [K, win, win]
     # Cells outside the map get weight 0. Clamping alone would repeat the border cell and pull
-    # predictions towards the image edge (docs/PRD_finetuning.md section 3.1).
+    # predictions towards the image edge.
     inside = ((raw_rows >= 0) & (raw_rows < h))[:, :, None] & ((raw_cols >= 0) & (raw_cols < w))[:, None, :]
     logits = (patch / temperature).masked_fill(~inside, float("-inf"))
     weights = torch.softmax(logits.reshape(n, -1), -1).reshape(n, len(offsets), len(offsets))

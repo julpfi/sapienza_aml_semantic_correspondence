@@ -42,6 +42,11 @@ class CorrespondenceModel(nn.Module):
             cache.put((key, flip), feats)
         return feats
 
+    @torch.no_grad()
+    def cls_embedding(self, img):
+        """L2-normalised DINOv2 CLS token [C] of one PIL image, with the eval preprocessing."""
+        return self.backbone.cls(preprocess_image(img, self.cfg).to(self.device))[0]
+
     def new_cache(self):
         return FeatureCache(self.cfg["feature_cache_size"])
 

@@ -95,94 +95,90 @@ BASE = {
         "category": "category",        # not in the challenge data (checked 2026-11-04): everything is "all"
     },
 
-    # --- Reproducibility ---
-    "seed": 0,
-    "split_seed": 42,                  # validation split (data/splits.py)
+    # --- Reproducibility (Lang values) ---
+    "seed": 0,                         # Lang: 0 (main had 1019)
+    "split_seed": 42,                  # Lang notebook
     "val_fraction": 0.2,               # share of image pairs held out for validation
-    "max_val_queries": 500,            # cap on validation queries (gives 453)
+    "max_val_queries": 500,            # Lang notebook cap (gave 453 queries)
     "max_train_queries": 0,            # 0 = all (use a small number for quick checks)
     "max_test_queries": 0,             # 0 = all; never limit a real submission
     "deterministic": True,
     "device": "auto",                  # "auto" | "cuda" | "cpu"
     "num_workers": 2,
 
-    # --- Logging ---
+    # --- Logging (main) ---
     "wandb_project": "sapienza-aml-semantic-correspondence",
     "wandb_entity": "pfingsten-sapienza-universit-di-roma",
     "wandb_mode": "auto",              # "auto" (online if a key is set) | "online" | "offline" | "disabled"
     "publish_best": True,              # upload best.pt to W&B when training ends
     "init_artifact": None,             # start from a teammate's model: "<entity>/<project>/<run_id>-best:latest"
 
-    # --- Model ---
+    # --- Model (Lang: torch.hub dinov2_vitb14 -> facebook/dinov2-base) ---
     "model_id": "facebook/dinov2-base",
     "model_revision": "f9e44c814b77203eaa57a6bdbbd535f21ede1415",  # pinned commit on the Hub
-    "feature_layer": -1,               # transformer block to read (-1 = last)
-    "pos_embed_interp": "hub",         # "hub" = torch.hub interpolation, "hf" = transformers default
+    "feature_layer": -1,               # transformer block to read (-1 = last); Lang `layer`
+    "pos_embed_interp": "hub",         # "hub" = torch.hub interpolation (Lang results), "hf" = transformers default
     "pos_embed_interp_offset": 0.1,    # torch.hub DINOv2 value (models without registers)
-    "image_size": 644,                 # square input; multiple of the patch size (14)
+    "image_size": 644,                 # square input; multiple of the patch size (14). Lang submission: 644
     "image_mean": [0.485, 0.456, 0.406],
     "image_std": [0.229, 0.224, 0.225],
     "attn_implementation": "sdpa",     # transformers attention; "sdpa" uses the memory-efficient kernel on a T4
-    # An untrained "linear"/"mlp" head is the identity: without a trained best.pt (--run) the model is
-    # the frozen baseline.
-    "head": "linear",                  # "none" (identity) | "linear" | "mlp" (needed to train)
+    # An untrained "linear"/"mlp" head is the identity, so these defaults give the Lang baseline until
+    # a trained best.pt is loaded with --run.
+    "head": "linear",                  # "none" (identity, = Lang) | "linear" | "mlp" (needed to train)
     "head_dim": None,                  # output size of the "linear" head; None = backbone width (identity start)
 
-    # --- Matching ---
+    # --- Matching (Lang) ---
     "matcher": "soft_window",          # "argmax" | "soft_window"
-    "soft_window": 11,                 # window side in (upsampled) cells
-    "soft_temperature": 0.02,
+    "soft_window": 9,                  # window side in (upsampled) cells
+    "soft_temperature": 0.04,
     "feat_upsample": 2,                # bilinear upsampling of the target feature map
     "flip_test": False,                # try a mirrored source and keep the better global alignment
     "feature_cache_size": 256,         # images kept in memory during inference
     "cache_features_to_disk": False,   # frozen mode only: store backbone features in features_dir
 
-    # --- Training (Colab T4; why each value: docs/RUN.md section 8) ---
+    # --- Training (Colab T4; docs/RUN.md section 8) ---
     "train_mode": "finetune",          # "frozen" (train the head) | "finetune" (head + last blocks)
-    "unfreeze_blocks": 1,              # last block + final LayerNorm + head
+    "unfreeze_blocks": 2,              # blocks 10 and 11 + final LayerNorm + head (ViT-B)
     "batch_size": "auto",              # micro-batch: "auto" = largest that fits the GPU x 0.85, or an int
     "effective_batch": 16,             # batch seen by the optimiser (micro-batch x accumulation steps)
     "effective_batch_schedule": None,  # optional ramp {from_epoch: effective_batch}, e.g. {0: 8, 3: 16}
-    "epochs": 5,                       # ~635 updates at effective batch 16
-    "early_stop_patience": 2,          # stop after this many epochs without a better val PCK; 0 = never
+    "epochs": 5,                       # ~900 updates at batch 16 on ~2,040 training queries
+    "early_stop_patience": 3,          # stop after this many epochs without a better val PCK; 0 = never
     # Optimiser: AdamW + OneCycleLR; each lr below is the peak (max_lr) of its parameter group.
-    "lr_head": 1e-3,
-    "lr_backbone": 1e-5,               # top trained block and the final LayerNorm
-    "layer_decay": 0.75,               # block i from the top gets lr_backbone * layer_decay**i
-    "lr_pct_start": 0.05,              # OneCycleLR pct_start: share of the updates spent warming up
+    "lr_head": 1e-3,                   # the head is small and starts as the identity
+    "lr_backbone": 1e-5,               # every unfrozen block (10 and 11) and the final LayerNorm
+    "warmup_pct": 0.05,                # OneCycleLR pct_start: share of the updates spent warming up (was 0.10)
     "weight_decay": 0.05,              # AdamW, on every trained parameter
-    "grad_clip": 5.0,                  # max total gradient norm
+    "grad_clip": 1.0,                  # Lang
     "amp": True,                       # fp16 autocast + GradScaler on CUDA (the T4 has no bf16); ignored on CPU
-    "loss_temperature": 0.03,          # softmax temperature of the loss; try 0.02 / 0.05
-    "label_sigma": 1.0,                # Gaussian label width in patches (0 = one-hot)
-    "checkpoint_every_steps": 150,     # last.pt every N updates (~10 min of ViT-B on a T4); 0 = end of epoch only
+    "loss_temperature": 0.03,          # Lang ft_temperature; try 0.02 / 0.05
+    "label_sigma": 1.0,                # Gaussian label width in patches (0 = one-hot); Lang ft_label_sigma
+    "checkpoint_every_steps": 0,       # last.pt every N updates; 0 = end of epoch only (fewer Drive writes)
     "val_every_epoch": True,
-    "peak_mass_window": 5,             # train/peak_mass: probability inside this many cells around the best cell
 
     # --- Augmentation (train only; source and target images are augmented separately) ---
-    # Very light: only aug_image_prob of the images enter the crop/rotation/colour steps below, and a
-    # crop removes at most 10% of the side (about 9.5% of the images change).
-    "flip_augment": True,              # mirror both images together (keeps left/right consistent)
+    "flip_augment": True,              # Lang ft_pair_flip_aug (both images, keeps left/right consistent)
     "flip_augment_prob": 0.5,
-    "aug_image_prob": 0.10,            # share of images that go through the steps below; 0 = off
-    "aug_rotation_deg": 10.0,          # max rotation; 0 = off
+    "aug_rotation_deg": 15.0,          # max rotation; 0 = off
     "aug_rotation_prob": 0.5,
-    "aug_color_jitter": 0.2,           # brightness / contrast / saturation strength; 0 = off
-    "aug_hue_jitter": 0.02,
+    "aug_color_jitter": 0.3,           # brightness / contrast / saturation strength; 0 = off
+    "aug_hue_jitter": 0.05,
     "aug_color_prob": 0.8,
-    "aug_grayscale_prob": 0.05,
-    "aug_crop_scale": [0.9, 1.0],      # random crop side as a fraction of the image side
+    "aug_grayscale_prob": 0.1,
+    "aug_crop_scale": [0.7, 1.0],      # random crop side as a fraction of the image side
     "aug_crop_prob": 0.5,
-    "aug_blur_prob": 0.05,
+    "aug_blur_prob": 0.1,
     "aug_edge_margin": 14,             # px in resized space: points closer to the border reject the augmentation
     "aug_max_tries": 3,
-    "label_jitter": 0.25,              # std of the noise on target labels, in patches; 0 = off
+    "label_jitter": 0.5,               # std of the noise on target labels, in patches (GeoAware-SC); 0 = off
 
     # --- Evaluation ---
     "pck_alpha": 0.1,                  # competition metric: PCK@0.10
     "pck_alphas_report": [0.05, 0.1, 0.15],
-    "pck_strict": True,                # correct when d / L < alpha
-    "n_visual_checks": 8,              # worst validation queries drawn after evaluate
+    "pck_strict": True,                # correct when d / L < alpha (Lang notebook)
+    "n_visual_checks": 4,              # worst validation queries drawn on W&B (val/worst_predictions)
+    "visual_thumb_px": 320,            # longest side of the images drawn in that plot
     "near_miss_factor": 2.0,           # near miss: alpha <= d/L < factor * alpha
     "far_miss_dist": 0.5,              # far miss: d/L above this
     "edge_bins": [0.05, 0.15],         # distance of the nearest target to the image border / L
@@ -199,7 +195,7 @@ BASE = {
         "facebook/dinov2-large": "47b73eefe95e8d44ec3623f8890bd894b6ea2d6c",  # Hub commit, checked 2026-11-04
     },
 
-    # --- Submission (CLAUDE.md format) ---
+    # --- Submission (Lang / CLAUDE.md format) ---
     "submission_columns": ["id", "prediction"],
     "prediction_decimals": 2,          # "[75.81,228.38]"
     "clip_to_image": True,

@@ -11,7 +11,7 @@ The review has two parts:
    2.4 (learning rates, warmup, clip) were then replaced by AdamW + OneCycleLR, lr_head 1e-3, clip 5: current
    values in [RUN.md](RUN.md) section 8.
 
-Related: [PRD_finetuning.md](PRD_finetuning.md) (design and hyperparameter choices), [RUN.md](RUN.md) (how to run).
+Related: [RUN.md](RUN.md) (how to run, hyperparameters).
 
 ## The run in one table
 
@@ -76,7 +76,7 @@ Why the last ones:
   mostly fit these 392 pairs and lose generality (overfitting, forgetting).
 - **Memory and speed.** Gradients only flow back to block 10. The activations of blocks 0–9 are not stored, so a
   micro-batch of 16 fits in 5.8 GB of the T4's 15 GB.
-- **Evidence.** 2 blocks was the best setting for ViT-B on SPair-71k (PRD §6.5).
+- **Evidence.** 2 blocks was the best setting for ViT-B on SPair-71k.
 
 Each trained part has its own learning rate (layer-wise decay 0.75): head 1e-4, final LayerNorm 1e-5, block 11 1e-5,
 block 10 7.5e-6. The deeper a block, the more general it is, so the smaller its learning rate.
@@ -107,7 +107,7 @@ stops at `effective_batch`; it does not try 32, so 16 means "16 fits", not "16 i
 Accumulating gives the same gradient as one large batch, because ViTs use LayerNorm (computed per token) and no
 BatchNorm (computed across the batch). Only time differs. A smaller micro-batch with more accumulation steps gives
 the same training, only slower. Why 16, and not more: 2,042 / 16 = 127 updates per epoch. A larger batch means
-fewer updates for the same data (PRD §5.3).
+fewer updates for the same data.
 
 ## 1.4 The loss, and what softmax entropy measures
 

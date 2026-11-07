@@ -4,7 +4,7 @@
     python scripts/check_augmentation.py --n 16 --checks 500
 
 Look at the picture: every green target and red source point must sit on the same object part as
-before augmentation, and never on the grey padding of a rotation (docs/PRD_finetuning.md section 3.3).
+before augmentation, and never on the grey padding of a rotation.
 """
 
 import argparse

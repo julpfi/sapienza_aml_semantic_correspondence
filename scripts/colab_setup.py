@@ -55,7 +55,7 @@ def install():
 
 def version_check():
     """Print installed vs environment.yml versions. Colab keeps its own torch on purpose (pip, not
-    Miniconda: docs/PRD_finetuning.md section 8), so a torch difference is expected, others are not."""
+    Miniconda), so a torch difference is expected, others are not."""
     from importlib.metadata import PackageNotFoundError, version
 
     import yaml

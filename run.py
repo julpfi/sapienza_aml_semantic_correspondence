@@ -115,7 +115,7 @@ def main(argv=None):
 
     if args.mode == "evaluate":
         from data.datasets import build_dataset
-        from src.diagnostics import log_evaluation, plot_predictions, worst_queries
+        from src.diagnostics import log_evaluation, plot_worst_predictions
         from src.evaluate import evaluate
         from src.models.matching import FeatureCache
         from src.sweep import describe, run_sweep
@@ -130,13 +130,10 @@ def main(argv=None):
         if sweep is not None:
             sweep.to_csv(run_dir / "sweep.csv", index=False)
             print(describe(sweep, cfg))
-        png = run_dir / "visual_check.png"
-        figure = plot_predictions(cfg, model, build_dataset(cfg, "val"),
-                                  worst_queries(meter.frame(), cfg["n_visual_checks"]), png)
-        print(f"Visual check (worst queries): {png}")
         wandb_run = init_wandb(cfg, run_id, run_dir, job_type="evaluate") if cfg["wandb_evaluate"] else None
-        log_evaluation(wandb_run, summary, meter, figure=figure, sweep=sweep)
         if wandb_run:
+            figure = plot_worst_predictions(cfg, model, build_dataset(cfg, "val"), meter.frame())
+            log_evaluation(wandb_run, summary, meter, figure=figure, sweep=sweep)
             wandb_run.finish()
         return 0
 

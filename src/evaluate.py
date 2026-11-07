@@ -3,9 +3,8 @@
 Outputs in <run_dir>/ (skipped with save=False, as during training):
     summary.json      PCK@alphas (+95% interval), score (0-1), error mix, PCK and loss per single/multi target
     per_query.csv     one row per query: prediction, d/L, target/edge group, error type
-    per_group.csv     PCK, count, interval and error mix per single/multi target and edge group
-    error_types.csv   correct, near_miss, wrong_keypoint, far_miss, other_miss counts
-Groups and error types: docs/PRD_finetuning.md section 4.2.
+The tables per group and per error type are rebuilt from per_query.csv (PCKMeter), printed and logged to W&B.
+Groups and error types: src/metrics.py.
 """
 
 import json
@@ -67,8 +66,6 @@ def evaluate(cfg, model, run_dir, save=True, verbose=True, with_loss=True, cache
         out.mkdir(parents=True, exist_ok=True)
         (out / "summary.json").write_text(json.dumps(summary, indent=2) + "\n")
         frame.to_csv(out / "per_query.csv", index=False)
-        meter.per_group().to_csv(out / "per_group.csv", index=False)
-        meter.error_types().to_csv(out / "error_types.csv")
     if verbose:
         print(json.dumps({k: round(v, 4) if isinstance(v, float) else v for k, v in summary.items()}, indent=2))
     return summary, meter

@@ -1,4 +1,4 @@
-"""Largest training micro-batch that fits the GPU (docs/PRD_finetuning.md section 5.3).
+"""Largest training micro-batch that fits the GPU.
 
 Memory depends on the model, image_size and the number of trained blocks, not on the data, so the
 probe runs real forward+backward steps on random images of the training size: micro-batch 1, 2, 4, ...
