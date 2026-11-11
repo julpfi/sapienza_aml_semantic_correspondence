@@ -6,7 +6,8 @@ For a source point, its feature is compared with every target cell; a softmax ov
 "soft_ce" (v2 default): cross-entropy with a target distribution made of a Gaussian bump
     (label_sigma, in cells) on each accepted target, every target with the same weight. The model
     must spread p over the whole bump and over ALL accepted targets (e.g. every wheel), so the loss
-    has a floor above 0 and the entropy of p stays high (about 3.3-3.5 nats with sigma = 1).
+    has a floor above 0 and the entropy of p stays high (about 3.3-3.5 nats with sigma = 1, i.e.
+    entropy_norm 0.43-0.46 on the 46 x 46 grid).
 "marginal" (Lang pipeline): -log of the total p on the positive cells, the cells whose centre is
     within marginal_radius cells of ANY accepted target (plus the nearest cell of each target).
     How p is shared among the positives is free, so the model can put almost all of it on one
@@ -14,12 +15,18 @@ For a source point, its feature is compared with every target cell; a softmax ov
     what PCK rewards (a point between two wheels is wrong for both). label_sigma is not used.
 """
 
+import math
+
 import torch
 import torch.nn.functional as F
 
 from src.models.matching import cell_centers, sample_point_features
 
 LOSSES = ("soft_ce", "marginal")
+LOSS_STATS = ("loss", "loss_over_chance", "entropy_norm")  # what matching_loss returns, in this order
+# Logged and reported (train/, val/): the normalised stats only. The raw loss depends on the loss type,
+# the temperature and the grid size, so it is used for the gradients and never charted.
+LOGGED_STATS = LOSS_STATS[1:]
 
 
 def _cell_distances(trg_xys_resized, h, w, image_size, device):
@@ -56,21 +63,31 @@ def positive_cells(trg_xys_resized, h, w, image_size, radius, device):
     return mask
 
 
-def matching_loss(src_feats, trg_feats, src_xy_resized, trg_xys_resized, cfg):
+def matching_loss(src_feats, trg_feats, src_xy_resized, trg_xys_resized, cfg, temperature=None):
     """src_feats, trg_feats [C, h, w]; src_xy_resized [1, 2]; trg_xys_resized [N, 2] (resized pixels).
+    temperature: softmax temperature, default cfg["loss_temperature"] (train.py passes the annealed one).
 
-    Returns (loss, entropy): entropy (detached) of p over the cells, which falls when the matching
-    gets sharper.
+    Returns the three LOSS_STATS; only `loss` carries gradients:
+        loss              the training loss, in nats
+        loss_over_chance  (loss - floor) / (chance - floor): 1 = uniform p (chance), 0 = lowest possible loss.
+                          chance = log(n_cells) for soft_ce and log(n_cells / n_positive) for marginal;
+                          floor = entropy of the soft_ce target, 0 for marginal.
+        entropy_norm      H(p) / log(n_cells): 0 = one-hot, 1 = uniform over the cells
     """
     _, h, w = trg_feats.shape
-    size = cfg["image_size"]
+    size, log_cells = cfg["image_size"], math.log(h * w)
     query = sample_point_features(src_feats, src_xy_resized.to(src_feats.device), size)  # [1, C]
-    log_probs = F.log_softmax((query @ trg_feats.flatten(1))[0] / cfg["loss_temperature"], -1)  # [h*w]
-    entropy = -(log_probs.exp() * log_probs).sum().detach()
+    logits = (query @ trg_feats.flatten(1))[0] / (temperature or cfg["loss_temperature"])
+    log_probs = F.log_softmax(logits, -1)  # [h*w]
+    entropy_norm = -(log_probs.exp() * log_probs).sum().detach() / log_cells
     if cfg["loss"] == "soft_ce":
         target = target_distribution(trg_xys_resized, h, w, size, cfg["label_sigma"], trg_feats.device)
-        return -(target * log_probs).sum(), entropy
-    if cfg["loss"] == "marginal":
+        loss = -(target * log_probs).sum()
+        chance, floor = log_cells, float(-torch.xlogy(target, target).sum())
+    elif cfg["loss"] == "marginal":
         mask = positive_cells(trg_xys_resized, h, w, size, cfg["marginal_radius"], trg_feats.device)
-        return -torch.logsumexp(log_probs[mask], 0), entropy
-    raise ValueError(f"loss must be one of {LOSSES}, got {cfg['loss']!r}")
+        loss = -torch.logsumexp(log_probs[mask], 0)
+        chance, floor = log_cells - math.log(int(mask.sum())), 0.0
+    else:
+        raise ValueError(f"loss must be one of {LOSSES}, got {cfg['loss']!r}")
+    return loss, (loss.detach() - floor) / (chance - floor), entropy_norm

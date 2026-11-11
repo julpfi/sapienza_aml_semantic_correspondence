@@ -200,13 +200,15 @@ sections of [REVIEW_finetuning.md](REVIEW_finetuning.md).
 | `weight_decay` | 0.05, on every trained parameter | plain AdamW |
 | **Schedule** | | |
 | `epochs` / `early_stop_patience` | 5 / 3 | |
-| `effective_batch` | **8** (was 16; Lang 4), micro-batch auto | ≈ 255 updates per epoch instead of ≈ 127: with Adam each update moves the weights by about the lr, so 2× more movement per epoch. Optional ramp: `effective_batch_schedule` |
-| `warmup_pct` | **0.05** (was 0.10) | OneCycleLR `pct_start`: lr rises from peak / 25 to the peak over the first 5% of the updates, then cosine to peak / 25e4. Shorter warmup against the entropy overshoot at the end of the warmup (1.8) |
-| `grad_clip` | 1.0 | max total gradient norm; the normal norm is ≈ 11, so most updates are clipped (1.9) |
+| `effective_batch` | **16** (was 8), micro-batch auto | ≈ 127 updates per epoch, ≈ 638 in 5 epochs: less noisy gradients than at 8. Optional ramp: `effective_batch_schedule` |
+| `warmup_pct` | **0.10** (was 0.05) | OneCycleLR `pct_start`: lr rises from peak / 25 to the peak over the first 10% of the updates (≈ 64, half an epoch), then cosine to peak / 25e4. The peak lr is the last warmup update. Slower warmup against the entropy rise of the first epoch (1.8) |
+| `grad_clip` | **5.0** (was 1.0) | max total gradient norm. The norm scales with 1 / T: ≈ 11 at T = 0.03 (run 1), so expect ≈ 7 at 0.05. At 5 the clip is a spike guard that still lets the gradient size vary; at 1 every update was clipped (1.9) |
 | precision | fp32 (no AMP) | as in the Lang pipeline; slower and more memory than fp16, so the auto micro-batch is smaller |
 | **Loss** | | |
-| `loss` | `soft_ce` | `soft_ce`: cross-entropy with Gaussian bumps on all accepted targets (entropy floor ≈ 3.3–3.5). `marginal` (Lang): −log of the probability on the cells within `marginal_radius` (1 cell) of any target; lets the model commit to one target with a sharp peak. `val/loss` is on a different scale for each: compare by val PCK |
-| `loss_temperature` | **0.02** (was 0.03) | both losses; lower = sharper, lowers `train/softmax_entropy` (not comparable with runs at 0.03) |
+| `loss` | `soft_ce` | `soft_ce`: cross-entropy with Gaussian bumps on all accepted targets (entropy floor ≈ 3.3–3.5). `marginal` (Lang): −log of the probability on the cells within `marginal_radius` (1 cell) of any target; lets the model commit to one target with a sharp peak. raw losses are on different scales, so only `loss_over_chance` is charted |
+| `loss_temperature` | **0.05** (was 0.02) | both losses; higher = flatter softmax and gradients 2.5× smaller than at 0.02, for a calmer first epoch. Loss and entropy charts are not comparable across temperatures |
+| `loss_temperature_start` | **0.07** (on) | the loss temperature starts there and falls linearly to `loss_temperature` over the warmup updates (`train/loss_temperature`). Validation always uses `loss_temperature` |
+| `train_on_val` | False | final submission only: train on the validation pairs too (2,495 queries instead of 2,042). No validation, no early stop, `best.pt` = last epoch: set `epochs` from a validated run first |
 | `label_sigma` | 1.0 cell | `soft_ce` only |
 | `label_jitter` | 0.5 cell | noise on the target labels |
 | **Augmentation** (every training image) | | |
@@ -228,14 +230,15 @@ and the console capture are off.
 
 | Chart | What it is | How to read it (run 1 values) |
 |---|---|---|
-| `train/loss` | cross-entropy between the predicted cell distribution and the Gaussian bumps on the accepted targets, mean of the update | can never reach 0: its floor is the target entropy H(t) ≈ 3.3–3.5 nats. Run 1: 9 → 4.2. Not comparable with `val/loss` (train has augmentation and label jitter) |
-| `train/loss_ema` | 0.95 EMA of `train/loss` (memory ≈ 20 updates) | the trend; the raw loss is noisier (std 0.17) than an epoch of progress |
-| `train/loss/single`, `/multi` | loss of queries with 1 / several accepted targets | compare each only with itself over time: multi has a higher floor (+ ln K) |
-| `train/softmax_entropy` (+ `_ema`) | entropy H(p) of the predicted distribution; e^H = effective number of cells | ideal ≈ 3.3–3.5 (27–33 cells). Below = overconfident, above = too spread. Run 1: 2.6 at start (confidently wrong), peak 5.8 at the end of the warmup, 4.2 at the end. Run 2 should show a smaller peak |
-| `lr/block_10`, `lr/block_11`, `lr/layernorm` | learning rate per group, used by that update | OneCycleLR: rises over the first `warmup_pct` (5%) of the updates, then cosine to ≈ 0 |
+| `train/loss_over_chance` | (loss − floor) / (chance − floor). chance = loss of a uniform p: log N for `soft_ce`, log(N / N_pos) for `marginal` (N = 2,116 cells, N_pos = positive cells). floor = lowest possible loss: the target entropy for `soft_ce`, 0 for `marginal` | 1 = chance, 0 = perfect, above 1 = confidently wrong (the frozen model at a low temperature). Replaces the raw `train/loss`: comparable between the two losses, temperatures and image sizes. Train has augmentation and label jitter, so it is not equal to the val value |
+| `train/loss_over_chance_ema` | 0.95 EMA (memory ≈ 20 updates) | the trend; the per-update value is noisy |
+| `train/loss_over_chance/{single, multi}` | the same for queries with 1 / several accepted targets | the floor already includes the extra ln K of multi targets, so the two are on one scale |
+| `train/entropy_norm` (+ `_ema`) | H(p) / log N, entropy of the predicted distribution over the N cells. Replaces `train/softmax_entropy` (= entropy_norm × 7.66 nats at 644 px) | 0 = one-hot, 1 = uniform. For `soft_ce` with sigma 1 the ideal is ≈ 0.43–0.46 (3.3–3.5 nats); `marginal` can go lower. Run 1 in these units: 0.34 at start, peak 0.76 at the end of the warmup, 0.55 at the end. The peak is what the slower warmup should lower |
+| `train/loss_temperature` | loss temperature of the update | 0.07 → 0.05 over the warmup, then flat (only logged with `loss_temperature_start`) |
+| `lr/block_10`, `lr/block_11`, `lr/layernorm` | learning rate per group, used by that update | OneCycleLR: rises over the first `warmup_pct` (10%) of the updates, then cosine to ≈ 0 |
 | `batch/effective` | samples per update | flat at 16 without `effective_batch_schedule` |
 | `optim/grad_norm` | total gradient norm before clipping | large because the logits are divided by T = 0.03 (×33): not instability. Run 1: 27–44 in epoch 0, ≈ 11 after |
-| `optim/grad_clipped` | 1 when the norm is above `grad_clip` | with clip 1 and a normal norm ≈ 11 it is mostly 1; read `grad_norm` for spikes instead |
+| `optim/grad_clipped` | 1 when the norm is above `grad_clip` (5) | should be mostly 1 during the warmup and less often after |
 
 **Validation (`val/`, each epoch)**
 
@@ -245,7 +248,9 @@ and the console capture are off.
 | `val/pck@0.1_ci95` | half-width of the 95% interval (≈ ± 4.5). Optimistic (queries of a pair are correlated); for two settings on the same queries a smaller difference can still be real |
 | `val/pck@0.05`, `val/pck@0.15` | precision (0.05) and coarse correctness (0.15) |
 | `val/pck@0.1/{single, multi}` | multi-target queries score higher although their loss is higher |
-| `val/loss`, `val/loss/{single, multi}` | same loss without augmentation; should go down with PCK |
+| `val/pck@0.1_gain` | val PCK of this epoch minus the previous epoch (from epoch 1) |
+| `val/pck@0.1_gain_over_ci95` | that gain divided by `val/pck@0.1_ci95`. Between −1 and 1 = the epoch's change is inside the noise of the validation set; when it stays there, more epochs are not buying a measurable gain. Same caveats as the interval |
+| `val/loss_over_chance`, `val/loss_over_chance/{single, multi}`, `val/entropy_norm` | as the `train/` charts, without augmentation and label jitter, always at `loss_temperature`; `loss_over_chance` should go down with PCK |
 | `val/flip_rate` | share of queries where `flip_test` picked the mirrored source (0 while it is off) |
 | `val/error_types` (bar plot) | correct (d < 0.1 L); wrong_keypoint (on another labelled part of the same pair, e.g. left ↔ right eye); near_miss (0.1–0.2 L); other_miss (0.2–0.5 L); far_miss (> 0.5 L). Run 1: fine-tuning removed far / other misses; near_miss (16%) and wrong_keypoint (10%) are what is left |
 | `val/per_group`, `val/dist_hist` | table per single/multi target and edge distance, histogram of d / L |

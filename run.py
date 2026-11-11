@@ -107,7 +107,8 @@ def main(argv=None):
         from src.train import train
 
         best = train(cfg, model, run_id, run_dir, resume=bool(args.resume))
-        print(f"Best validation PCK@{cfg['pck_alpha']}: {best:.2f}. Checkpoints in {run_dir / 'checkpoints'}")
+        score = f"Best validation PCK@{cfg['pck_alpha']}: {best:.2f}" if best > float("-inf") else "No validation"
+        print(f"{score}. Checkpoints in {run_dir / 'checkpoints'}")
         return 0
 
     if args.run:

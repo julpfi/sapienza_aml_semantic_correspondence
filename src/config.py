@@ -141,28 +141,34 @@ BASE = {
     "train_mode": "finetune",          # last DINOv2 blocks + final LayerNorm ("frozen" needs a head: old runs only)
     "unfreeze_blocks": 2,              # blocks 10 and 11 + final LayerNorm (ViT-B)
     "batch_size": "auto",              # micro-batch: "auto" = largest that fits the GPU x 0.85, or an int
-    "effective_batch": 8,              # batch seen by the optimiser (micro-batch x accumulation steps); Lang: 4
+    "effective_batch": 16,             # batch seen by the optimiser (micro-batch x accumulation steps)
     "effective_batch_schedule": None,  # optional ramp {from_epoch: effective_batch}, e.g. {0: 8, 3: 16}
-    "epochs": 5,                       # ~255 updates per epoch at effective batch 8 on ~2,040 training queries
+    "epochs": 5,                       # ~127 updates per epoch at effective batch 16 on ~2,040 training queries
     "early_stop_patience": 3,          # stop after this many epochs without a better val PCK; 0 = never
     # Optimiser: AdamW + OneCycleLR; each lr below is the peak (max_lr) of its parameter group.
     "lr_backbone": 1e-5,               # top trained block (11) and the final LayerNorm
     "layer_decay": 0.75,               # block i from the top gets lr_backbone * layer_decay**i (block 10: 7.5e-6)
-    "warmup_pct": 0.05,                # OneCycleLR pct_start: share of the updates spent warming up (was 0.10)
+    "warmup_pct": 0.10,                # OneCycleLR pct_start: share of the updates spent warming up; the peak lr is its last update
     "weight_decay": 0.05,              # AdamW, on every trained parameter
-    "grad_clip": 1.0,                  # Lang
+    "grad_clip": 5.0,                  # max total gradient norm
     # Loss (src/models/loss.py explains both):
     #   "soft_ce"  = cross-entropy with Gaussian bumps on ALL accepted targets (v2). Floor > 0, the
-    #                probability is spread over every target, so softmax_entropy stays around 3.3-3.5.
+    #                probability is spread over every target, so entropy_norm stays around 0.43-0.46.
     #   "marginal" = Lang: -log of the probability on the cells within marginal_radius of ANY target.
     #                The model may commit to one target with a sharp peak: lower entropy. Ignores label_sigma.
     # val/loss of the two is on different scales: compare runs of different losses by val PCK only.
     "loss": "soft_ce",                 # "soft_ce" | "marginal"
-    "loss_temperature": 0.02,          # softmax temperature of the loss (both); lower = sharper (was 0.03)
+    "loss_temperature": 0.05,          # softmax temperature of the loss (both); lower = sharper
+    "loss_temperature_start": 0.07,    # anneal linearly from here to loss_temperature over the warmup updates;
+                                       # None = constant loss_temperature
     "label_sigma": 1.0,                # soft_ce: Gaussian label width in patches (0 = one-hot)
     "marginal_radius": 1.0,            # marginal: positive cells within this many cells of a target (Lang: 1.0)
     "checkpoint_every_steps": 0,       # last.pt every N updates; 0 = end of epoch only (fewer Drive writes)
     "val_every_epoch": True,
+    # Final submission only: also train on the validation pairs (+22% queries). Validation, best.pt
+    # selection and early stop are then off, and best.pt = the weights after the last epoch, so set
+    # `epochs` to the best epoch count of a validated run first.
+    "train_on_val": False,
 
     # --- Augmentation (train only; source and target images are augmented separately) ---
     "flip_augment": True,              # Lang ft_pair_flip_aug (both images, keeps left/right consistent)

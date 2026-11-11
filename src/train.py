@@ -1,14 +1,16 @@
-"""Training: the head with a frozen backbone (train_mode="frozen"), or the head plus the last
-`unfreeze_blocks` DINOv2 blocks (train_mode="finetune"). Hyperparameters: docs/RUN.md section 8.
+"""Training: the last `unfreeze_blocks` DINOv2 blocks and the final LayerNorm (train_mode="finetune").
+Hyperparameters: docs/RUN.md section 8.
 
-Loss: soft-label matching loss with all accepted targets (src/models/loss.py).
-Data: train.csv minus the validation pairs, augmented by src/augment.py.
+Loss: cfg["loss"] over all accepted targets (src/models/loss.py), at loss_temperature (optionally
+    annealed from loss_temperature_start during the warmup).
+Data: train.csv minus the validation pairs (plus them with train_on_val), augmented by src/augment.py.
 Batch: the optimiser sees `effective_batch` samples per update = micro-batch x accumulation steps.
     The micro-batch is the largest that fits the GPU (batch_size="auto", src/utils/batch_size.py).
 Optimiser: AdamW (weight_decay) with OneCycleLR over all updates: warmup for warmup_pct of them
     from max_lr / 25, then cosine down to max_lr / 25e4. One parameter group (own max_lr) per trained part.
-Each epoch: validation PCK (history.json, W&B), best.pt when it improves, last.pt for --resume,
-early stop after `early_stop_patience` epochs without improvement.
+Each epoch: validation PCK and its gain over the previous epoch against the 95% interval
+(history.json, W&B), best.pt when it improves, last.pt for --resume, early stop after
+`early_stop_patience` epochs without improvement.
 Called from run.py: python run.py --mode train
 """
 
@@ -19,16 +21,17 @@ import time
 from collections import defaultdict
 
 import numpy as np
+import pandas as pd
 import torch
 from torch.utils.data import DataLoader
 from tqdm.auto import tqdm
 
-from data.datasets import build_dataset, collate_samples
+from data.datasets import QueryDataset, build_dataset, collate_samples, read_queries
 from data.transforms import preprocess_image, to_resized
 from src.augment import augment_sample, augmentation_enabled
 from src.evaluate import evaluate
 from src.metrics import target_group
-from src.models.loss import matching_loss
+from src.models.loss import LOGGED_STATS, LOSS_STATS, matching_loss
 from src.utils.batch_size import fake_samples, find_micro_batch
 from src.utils.checkpoint import (
     checkpoint_path, download_artifact, load_checkpoint, load_model_weights, publish_best, save_checkpoint,
@@ -130,20 +133,27 @@ def jitter_labels(trg_resized, image_size, n_cells, std_cells):
     return (trg_resized + noise).clamp(0, image_size)
 
 
-def batch_loss(model, samples, cfg, store, train=True):
-    """Per-sample losses [B] and the detached softmax entropy per sample [B] (docs/RUN.md section 9)."""
+def loss_temperature_at(update, warmup_updates, cfg):
+    """Loss temperature of an optimiser update: loss_temperature, or with loss_temperature_start a
+    linear ramp from it to loss_temperature over the warmup updates."""
+    start, end = cfg["loss_temperature_start"], cfg["loss_temperature"]
+    if not start or update >= warmup_updates:
+        return end
+    return start + (end - start) * update / warmup_updates
+
+
+def batch_loss(model, samples, cfg, store, train=True, temperature=None):
+    """The LOSS_STATS of src/models/loss.py per sample: three tensors [B], gradients on the first only."""
     src_feats, trg_feats = compute_features(model, samples, cfg, store)
     size = cfg["image_size"]
-    losses, entropies = [], []
+    stats = []
     for b, s in enumerate(samples):
         trg = to_resized(s["trg_xys"], s["trg_img"].size, size)
         if train:
             trg = jitter_labels(trg, size, trg_feats.shape[-1], cfg["label_jitter"])
-        loss, entropy = matching_loss(src_feats[b], trg_feats[b],
-                                      to_resized(s["src_xy"][None], s["src_img"].size, size), trg, cfg)
-        losses.append(loss)
-        entropies.append(entropy)
-    return torch.stack(losses), torch.stack(entropies)
+        stats.append(matching_loss(src_feats[b], trg_feats[b],
+                                   to_resized(s["src_xy"][None], s["src_img"].size, size), trg, cfg, temperature))
+    return tuple(torch.stack(values) for values in zip(*stats))
 
 
 # ---------------------------------------------------------------------------
@@ -170,8 +180,7 @@ def choose_micro_batch(model, cfg, groups):
 
     def run_step(b):
         model.train()
-        losses, _ = batch_loss(model, fake_samples(b, cfg, rng), cfg, None, train=False)
-        losses.mean().backward()
+        batch_loss(model, fake_samples(b, cfg, rng), cfg, None, train=False)[0].mean().backward()
         for g in groups:
             for p in g["params"]:
                 p.grad = None
@@ -199,7 +208,12 @@ def train(cfg, model, run_id, run_dir, resume=False):
     seed_everything(cfg["seed"], cfg["deterministic"])  # the probe used random numbers
 
     optimizer = torch.optim.AdamW(groups, weight_decay=cfg["weight_decay"])
-    dataset = build_dataset(cfg, "train")
+    if cfg["train_on_val"]:
+        dataset = QueryDataset(pd.concat([read_queries(cfg, "train"), read_queries(cfg, "val")]), cfg)
+        print("train_on_val: training on the validation pairs too; no validation, best.pt = last epoch.")
+    else:
+        dataset = build_dataset(cfg, "train")
+    validate = cfg["val_every_epoch"] and not cfg["train_on_val"]
     if len(dataset) == 0:
         raise ValueError("The training split is empty.")
     micro = min(micro, len(dataset))
@@ -207,6 +221,7 @@ def train(cfg, model, run_id, run_dir, resume=False):
     plan, total_updates = plan_updates(n_batches, micro, cfg)
     print(f"{len(dataset)} training queries, micro-batch {micro}, effective batch "
           f"{[micro * a for a, _ in plan]} per epoch, {total_updates} updates in {cfg['epochs']} epochs")
+    warmup_updates = round(cfg["warmup_pct"] * total_updates)
     # Other OneCycleLR arguments at their defaults: div_factor 25, final_div_factor 1e4, cosine anneal.
     scheduler = torch.optim.lr_scheduler.OneCycleLR(optimizer, max_lr=[g["lr"] for g in groups],
                                                     total_steps=total_updates, pct_start=cfg["warmup_pct"])
@@ -256,8 +271,8 @@ def train(cfg, model, run_id, run_dir, resume=False):
         }, run_dir, "last.pt")
 
     key = f"pck@{cfg['pck_alpha']}"
-    val_set = build_dataset(cfg, "val") if wandb_run else None
-    loss_ema = entropy_ema = None
+    val_set = build_dataset(cfg, "val") if wandb_run and validate else None
+    ema = {}
     for epoch in range(start_epoch, cfg["epochs"]):
         accum, _ = plan[epoch]
         # The shuffle depends only on (seed, epoch), so a resumed epoch sees the same batches.
@@ -266,7 +281,7 @@ def train(cfg, model, run_id, run_dir, resume=False):
                             generator=torch.Generator().manual_seed(cfg["seed"] + epoch))
         model.train()
         optimizer.zero_grad(set_to_none=True)
-        step_losses, step_entropies, step_groups = [], [], defaultdict(list)
+        step_stats = defaultdict(list)  # per-sample values of the current update
         t_epoch = time.time()
         progress = tqdm(loader, desc=f"epoch {epoch}", total=n_batches)
         for i, samples in enumerate(progress):
@@ -275,14 +290,16 @@ def train(cfg, model, run_id, run_dir, resume=False):
             groups_of = [target_group(s["trg_xys"]) for s in samples]  # before augmentation drops targets
             if augment:
                 samples = [augment_sample(s, cfg) for s in samples]
-            losses, entropies = batch_loss(model, samples, cfg, store)
-            loss = losses.mean()
+            temperature = loss_temperature_at(global_step, warmup_updates, cfg)
+            stats = batch_loss(model, samples, cfg, store, temperature=temperature)
+            loss = stats[0].mean()
             if torch.isfinite(loss):
                 (loss / accum).backward()
-                step_losses += losses.detach().tolist()
-                step_entropies += entropies.tolist()
-                for value, group in zip(losses.detach().tolist(), groups_of):
-                    step_groups[group].append(value)
+                logged = dict(zip(LOSS_STATS, stats))
+                for name in LOGGED_STATS:
+                    step_stats[name] += logged[name].tolist()
+                for value, group in zip(logged["loss_over_chance"].tolist(), groups_of):
+                    step_stats[f"loss_over_chance/{group}"].append(value)
             else:
                 print(f"Warning: non-finite loss at epoch {epoch} batch {i}; batch skipped.")
             if (i + 1) % accum and i + 1 != n_batches:
@@ -296,31 +313,37 @@ def train(cfg, model, run_id, run_dir, resume=False):
             lrs = {f"lr/{g['name']}": g["lr"] for g in optimizer.param_groups}  # lr of this update
             scheduler.step()
             global_step += 1
-            mean_loss = float(np.mean(step_losses)) if step_losses else float("nan")
-            entropy = float(np.mean(step_entropies)) if step_entropies else None
-            if step_losses:  # 0.95 EMAs: memory of ~20 updates
-                loss_ema = mean_loss if loss_ema is None else 0.95 * loss_ema + 0.05 * mean_loss
-                entropy_ema = entropy if entropy_ema is None else 0.95 * entropy_ema + 0.05 * entropy
+            means = {name: float(np.mean(values)) for name, values in step_stats.items()}
+            for name in LOGGED_STATS:  # 0.95 EMA: memory of ~20 updates
+                if name in means:
+                    ema[name] = 0.95 * ema.get(name, means[name]) + 0.05 * means[name]
             if wandb_run:
-                log = {"train/loss": mean_loss, "train/loss_ema": loss_ema,
-                       "train/softmax_entropy": entropy, "train/softmax_entropy_ema": entropy_ema,
-                       **{f"train/loss/{g}": float(np.mean(v)) for g, v in step_groups.items()},
-                       **lrs,
-                       "batch/effective": micro * accum,
-                       "optim/grad_norm": grad_norm, "optim/grad_clipped": float(grad_norm > cfg["grad_clip"])}
-                wandb_run.log({k: v for k, v in log.items() if v is not None}, step=global_step)
-            progress.set_postfix(loss=f"{mean_loss:.3f}")
-            step_losses, step_entropies, step_groups = [], [], defaultdict(list)
+                wandb_run.log({**{f"train/{name}": value for name, value in means.items()},
+                               **{f"train/{name}_ema": value for name, value in ema.items()},
+                               **lrs,
+                               **({"train/loss_temperature": temperature} if cfg["loss_temperature_start"] else {}),
+                               "batch/effective": micro * accum,
+                               "optim/grad_norm": grad_norm,
+                               "optim/grad_clipped": float(grad_norm > cfg["grad_clip"])}, step=global_step)
+            progress.set_postfix(loss_over_chance=f"{means.get('loss_over_chance', float('nan')):.3f}")
+            step_stats = defaultdict(list)
             if cfg["checkpoint_every_steps"] and global_step % cfg["checkpoint_every_steps"] == 0:
                 save_last(epoch, i + 1, complete=False)
         skip_batches = 0
 
         record = {"epoch": epoch, "global_step": global_step, "epoch_seconds": round(time.time() - t_epoch, 1)}
-        if cfg["val_every_epoch"]:
+        if validate:
             summary, meter = evaluate(cfg, model, run_dir, save=False, verbose=False)
+            gain_text = ""
+            if history and key in history[-1]:
+                # Gain over the previous epoch, in units of the 95% interval: inside (-1, 1) = within noise.
+                gain = summary[key] - history[-1][key]
+                summary[f"{key}_gain"] = gain
+                summary[f"{key}_gain_over_ci95"] = gain / max(summary[f"{key}_ci95"], 1e-9)
+                gain_text = f" (gain {gain:+.2f} = {summary[f'{key}_gain_over_ci95']:+.2f} x ci95)"
             record.update(summary)
-            print(f"epoch {epoch}: val {key} = {summary[key]:.2f} ± {summary[f'{key}_ci95']:.1f}, "
-                  f"val loss {summary.get('loss', float('nan')):.3f}")
+            print(f"epoch {epoch}: val {key} = {summary[key]:.2f} ± {summary[f'{key}_ci95']:.1f}{gain_text}, "
+                  f"val loss_over_chance {summary['loss_over_chance']:.3f}, entropy_norm {summary['entropy_norm']:.3f}")
             if summary[key] > best:
                 best, stale = summary[key], 0
                 save_checkpoint({"model": trainable_state(model), "epoch": epoch, "score": best,
@@ -335,11 +358,11 @@ def train(cfg, model, run_id, run_dir, resume=False):
         history.append(record)
         (run_dir / "history.json").write_text(json.dumps(history, indent=2) + "\n")
         save_last(epoch, n_batches, complete=True)
-        if cfg["val_every_epoch"] and cfg["early_stop_patience"] and stale >= cfg["early_stop_patience"]:
+        if validate and cfg["early_stop_patience"] and stale >= cfg["early_stop_patience"]:
             print(f"Early stop: no better val {key} for {stale} epochs (best {best:.2f}).")
             break
 
-    if not cfg["val_every_epoch"]:  # keep the final weights as "best"
+    if not validate:  # keep the final weights as "best"
         save_checkpoint({"model": trainable_state(model), "epoch": cfg["epochs"] - 1, "score": None,
                          "config": cfg, "git_commit": git_commit()}, run_dir, "best.pt")
     # Training is over, so last.pt (weights + optimiser state, ~3x best.pt) is no longer needed on Drive.

@@ -1,8 +1,9 @@
 """Validation: predictions + PCK on the held-out image pairs, with the full report.
 
 Outputs in <run_dir>/ (skipped with save=False, as during training):
-    summary.json      PCK@alphas (+95% interval), score (0-1), error mix, PCK and loss per single/multi target
-    per_query.csv     one row per query: prediction, d/L, target/edge group, error type
+    summary.json      PCK@alphas (+95% interval), score (0-1), error mix, loss_over_chance (also per
+                      single/multi target) and entropy_norm (src/models/loss.py)
+    per_query.csv     one row per query: prediction, d/L, target/edge group, error type, loss_over_chance, entropy_norm
 The tables per group and per error type are rebuilt from per_query.csv (PCKMeter), printed and logged to W&B.
 Groups and error types: src/metrics.py.
 """
@@ -11,24 +12,25 @@ import json
 import time
 from pathlib import Path
 
+import pandas as pd
 import torch
 from tqdm.auto import tqdm
 
 from data.datasets import build_dataset, read_queries
 from data.transforms import to_resized
 from src.metrics import PCKMeter, official_score
-from src.models.loss import matching_loss
+from src.models.loss import LOGGED_STATS, LOSS_STATS, matching_loss
 
 
 def validation_loss(cfg, model, sample, cache):
-    """Training loss of one validation query, from the cached features of predict()."""
+    """The LOGGED_STATS of one validation query (no augmentation), from the cached features of predict()."""
     src_feats = model.image_features(sample["src_img"], cache=cache, key=sample["src_image"])
     trg_feats = model.image_features(sample["trg_img"], cache=cache, key=sample["trg_image"])
     size = cfg["image_size"]
-    loss, _ = matching_loss(src_feats.float(), trg_feats.float(),
-                            to_resized(sample["src_xy"][None], sample["src_img"].size, size),
-                            to_resized(sample["trg_xys"], sample["trg_img"].size, size), cfg)
-    return float(loss)
+    stats = matching_loss(src_feats.float(), trg_feats.float(),
+                          to_resized(sample["src_xy"][None], sample["src_img"].size, size),
+                          to_resized(sample["trg_xys"], sample["trg_img"].size, size), cfg)
+    return [float(value) for name, value in zip(LOSS_STATS, stats) if name in LOGGED_STATS]
 
 
 def evaluate(cfg, model, run_dir, save=True, verbose=True, with_loss=True, cache=None):
@@ -51,10 +53,10 @@ def evaluate(cfg, model, run_dir, save=True, verbose=True, with_loss=True, cache
 
     frame = meter.frame()
     if losses:
-        frame["loss"] = frame["query_id"].map(losses)
-        summary["loss"] = float(frame["loss"].mean())
-        for group, value in frame.groupby("target_group")["loss"].mean().items():
-            summary[f"loss/{group}"] = float(value)
+        frame = frame.join(pd.DataFrame.from_dict(losses, orient="index", columns=LOGGED_STATS), on="query_id")
+        summary.update({name: float(frame[name].mean()) for name in LOGGED_STATS})
+        for group, value in frame.groupby("target_group")["loss_over_chance"].mean().items():
+            summary[f"loss_over_chance/{group}"] = float(value)
 
     official = official_score(cfg, read_queries(cfg, "val"), frame)
     if official is not None:
