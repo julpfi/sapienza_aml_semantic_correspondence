@@ -2,11 +2,11 @@
 Hyperparameters: docs/RUN.md section 8.
 
 Loss: cfg["loss"] over all accepted targets (src/models/loss.py), at loss_temperature (optionally
-    annealed from loss_temperature_start during the warmup).
+    annealed from loss_temperature_start over the first loss_temperature_epochs).
 Data: train.csv minus the validation pairs (plus them with train_on_val), augmented by src/augment.py.
 Batch: the optimiser sees `effective_batch` samples per update = micro-batch x accumulation steps.
     The micro-batch is the largest that fits the GPU (batch_size="auto", src/utils/batch_size.py).
-Optimiser: AdamW (weight_decay) with OneCycleLR over all updates: warmup for warmup_pct of them
+Optimiser: AdamW (weight_decay) with OneCycleLR over all updates: warmup for warmup_epochs of them
     from max_lr / 25, then cosine down to max_lr / 25e4. One parameter group (own max_lr) per trained part.
 Each epoch: validation PCK and its gain over the previous epoch against the 95% interval
 (history.json, W&B), best.pt when it improves, last.pt for --resume, early stop after
@@ -96,6 +96,15 @@ def plan_updates(n_batches, micro, cfg):
     return plan, sum(updates for _, updates in plan)
 
 
+def updates_in_epochs(plan, epochs):
+    """Optimiser updates in the first `epochs` epochs of the plan (fractions allowed)."""
+    total = 0.0
+    for _, updates in plan:
+        total += updates * min(1.0, max(0.0, epochs))
+        epochs -= 1
+    return round(total)
+
+
 # ---------------------------------------------------------------------------
 # Forward pass and loss
 # ---------------------------------------------------------------------------
@@ -133,13 +142,13 @@ def jitter_labels(trg_resized, image_size, n_cells, std_cells):
     return (trg_resized + noise).clamp(0, image_size)
 
 
-def loss_temperature_at(update, warmup_updates, cfg):
+def loss_temperature_at(update, ramp_updates, cfg):
     """Loss temperature of an optimiser update: loss_temperature, or with loss_temperature_start a
-    linear ramp from it to loss_temperature over the warmup updates."""
+    linear ramp from it to loss_temperature over ramp_updates (ending exactly at loss_temperature)."""
     start, end = cfg["loss_temperature_start"], cfg["loss_temperature"]
-    if not start or update >= warmup_updates:
+    if not start or update >= ramp_updates - 1:
         return end
-    return start + (end - start) * update / warmup_updates
+    return start + (end - start) * update / (ramp_updates - 1)
 
 
 def batch_loss(model, samples, cfg, store, train=True, temperature=None):
@@ -221,10 +230,13 @@ def train(cfg, model, run_id, run_dir, resume=False):
     plan, total_updates = plan_updates(n_batches, micro, cfg)
     print(f"{len(dataset)} training queries, micro-batch {micro}, effective batch "
           f"{[micro * a for a, _ in plan]} per epoch, {total_updates} updates in {cfg['epochs']} epochs")
-    warmup_updates = round(cfg["warmup_pct"] * total_updates)
+    warmup_updates = max(1, updates_in_epochs(plan, cfg["warmup_epochs"]))
+    temperature_updates = updates_in_epochs(plan, cfg["loss_temperature_epochs"])
+    print(f"lr warmup over {warmup_updates} updates, loss temperature ramp over {temperature_updates}")
     # Other OneCycleLR arguments at their defaults: div_factor 25, final_div_factor 1e4, cosine anneal.
     scheduler = torch.optim.lr_scheduler.OneCycleLR(optimizer, max_lr=[g["lr"] for g in groups],
-                                                    total_steps=total_updates, pct_start=cfg["warmup_pct"])
+                                                    total_steps=total_updates,
+                                                    pct_start=warmup_updates / total_updates)
     augment = cfg["flip_augment"] or augmentation_enabled(cfg)
     store = None
     if cfg["cache_features_to_disk"] and cfg["train_mode"] == "frozen":
@@ -290,7 +302,7 @@ def train(cfg, model, run_id, run_dir, resume=False):
             groups_of = [target_group(s["trg_xys"]) for s in samples]  # before augmentation drops targets
             if augment:
                 samples = [augment_sample(s, cfg) for s in samples]
-            temperature = loss_temperature_at(global_step, warmup_updates, cfg)
+            temperature = loss_temperature_at(global_step, temperature_updates, cfg)
             stats = batch_loss(model, samples, cfg, store, temperature=temperature)
             loss = stats[0].mean()
             if torch.isfinite(loss):

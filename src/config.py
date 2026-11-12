@@ -146,11 +146,11 @@ BASE = {
     "epochs": 5,                       # ~127 updates per epoch at effective batch 16 on ~2,040 training queries
     "early_stop_patience": 3,          # stop after this many epochs without a better val PCK; 0 = never
     # Optimiser: AdamW + OneCycleLR; each lr below is the peak (max_lr) of its parameter group.
-    "lr_backbone": 1e-5,               # top trained block (11) and the final LayerNorm
-    "layer_decay": 0.75,               # block i from the top gets lr_backbone * layer_decay**i (block 10: 7.5e-6)
-    "warmup_pct": 0.10,                # OneCycleLR pct_start: share of the updates spent warming up; the peak lr is its last update
+    "lr_backbone": 1.5e-5,             # top trained block (11) and the final LayerNorm
+    "layer_decay": 0.75,               # block i from the top gets lr_backbone * layer_decay**i (block 10: 1.125e-5)
+    "warmup_epochs": 0.5,              # OneCycleLR warmup length in epochs (0.5 = half of the first epoch); the peak lr is its last update
     "weight_decay": 0.05,              # AdamW, on every trained parameter
-    "grad_clip": 5.0,                  # max total gradient norm
+    "grad_clip": 7.0,                  # max total gradient norm
     # Loss (src/models/loss.py explains both):
     #   "soft_ce"  = cross-entropy with Gaussian bumps on ALL accepted targets (v2). Floor > 0, the
     #                probability is spread over every target, so entropy_norm stays around 0.43-0.46.
@@ -158,9 +158,10 @@ BASE = {
     #                The model may commit to one target with a sharp peak: lower entropy. Ignores label_sigma.
     # val/loss of the two is on different scales: compare runs of different losses by val PCK only.
     "loss": "soft_ce",                 # "soft_ce" | "marginal"
-    "loss_temperature": 0.05,          # softmax temperature of the loss (both); lower = sharper
-    "loss_temperature_start": 0.07,    # anneal linearly from here to loss_temperature over the warmup updates;
+    "loss_temperature": 0.04,          # softmax temperature of the loss (both); lower = sharper
+    "loss_temperature_start": 0.07,    # anneal linearly from here to loss_temperature over loss_temperature_epochs;
                                        # None = constant loss_temperature
+    "loss_temperature_epochs": 1.0,    # length of the temperature ramp in epochs (1.0 = the whole first epoch)
     "label_sigma": 1.0,                # soft_ce: Gaussian label width in patches (0 = one-hot)
     "marginal_radius": 1.0,            # marginal: positive cells within this many cells of a target (Lang: 1.0)
     "checkpoint_every_steps": 0,       # last.pt every N updates; 0 = end of epoch only (fewer Drive writes)

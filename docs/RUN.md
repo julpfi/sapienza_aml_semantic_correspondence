@@ -196,18 +196,18 @@ sections of [REVIEW_finetuning.md](REVIEW_finetuning.md).
 | `train_mode` / `head` | finetune / **none** (was linear) | as in Lang: blocks 10–11 already adapt the features; a 768×768 head at lr 1e-3 changed every patch at once and could flatten the maps. Update 0 = frozen DINOv2 |
 | `unfreeze_blocks` | 2 (blocks 10 and 11 + final LayerNorm) | 2 was the best setting for ViT-B on SPair-71k (1.1) |
 | **Optimiser** | AdamW + OneCycleLR | |
-| `lr_backbone` (peak) / `layer_decay` | 1e-5 (block 11 and final LayerNorm) / 0.75 | block i from the top gets lr_backbone × 0.75^i: block 10 at 7.5e-6 |
+| `lr_backbone` (peak) / `layer_decay` | **1.5e-5** (was 1e-5; block 11 and final LayerNorm) / 0.75 | block i from the top gets lr_backbone × 0.75^i: block 10 at 1.125e-5 |
 | `weight_decay` | 0.05, on every trained parameter | plain AdamW |
 | **Schedule** | | |
 | `epochs` / `early_stop_patience` | 5 / 3 | |
 | `effective_batch` | **16** (was 8), micro-batch auto | ≈ 127 updates per epoch, ≈ 638 in 5 epochs: less noisy gradients than at 8. Optional ramp: `effective_batch_schedule` |
-| `warmup_pct` | **0.10** (was 0.05) | OneCycleLR `pct_start`: lr rises from peak / 25 to the peak over the first 10% of the updates (≈ 64, half an epoch), then cosine to peak / 25e4. The peak lr is the last warmup update. Slower warmup against the entropy rise of the first epoch (1.8) |
-| `grad_clip` | **5.0** (was 1.0) | max total gradient norm. The norm scales with 1 / T: ≈ 11 at T = 0.03 (run 1), so expect ≈ 7 at 0.05. At 5 the clip is a spike guard that still lets the gradient size vary; at 1 every update was clipped (1.9) |
+| `warmup_epochs` | **0.5** (replaces `warmup_pct` 0.10) | OneCycleLR warmup in epochs: lr rises from peak / 25 to the peak over the first half of epoch 0 (≈ 64 updates), then cosine to peak / 25e4. Independent of `epochs`. The peak lr is the last warmup update. Slower warmup against the entropy rise of the first epoch (1.8) |
+| `grad_clip` | **7.0** (was 5.0) | max total gradient norm. The norm scales with 1 / T: ≈ 11 at T = 0.03 (run 1), so expect ≈ 7 at 0.05. At 5 the clip is a spike guard that still lets the gradient size vary; at 1 every update was clipped (1.9) |
 | precision | fp32 (no AMP) | as in the Lang pipeline; slower and more memory than fp16, so the auto micro-batch is smaller |
 | **Loss** | | |
 | `loss` | `soft_ce` | `soft_ce`: cross-entropy with Gaussian bumps on all accepted targets (entropy floor ≈ 3.3–3.5). `marginal` (Lang): −log of the probability on the cells within `marginal_radius` (1 cell) of any target; lets the model commit to one target with a sharp peak. raw losses are on different scales, so only `loss_over_chance` is charted |
-| `loss_temperature` | **0.05** (was 0.02) | both losses; higher = flatter softmax and gradients 2.5× smaller than at 0.02, for a calmer first epoch. Loss and entropy charts are not comparable across temperatures |
-| `loss_temperature_start` | **0.07** (on) | the loss temperature starts there and falls linearly to `loss_temperature` over the warmup updates (`train/loss_temperature`). Validation always uses `loss_temperature` |
+| `loss_temperature` | **0.04** (was 0.05) | both losses; higher = flatter softmax and gradients 2.5× smaller than at 0.02, for a calmer first epoch. Loss and entropy charts are not comparable across temperatures |
+| `loss_temperature_start` | **0.07** (on) | the loss temperature starts there and falls linearly to `loss_temperature` over `loss_temperature_epochs` = **1.0**, the whole first epoch (`train/loss_temperature`). Validation always uses `loss_temperature` |
 | `train_on_val` | False | final submission only: train on the validation pairs too (2,495 queries instead of 2,042). No validation, no early stop, `best.pt` = last epoch: set `epochs` from a validated run first |
 | `label_sigma` | 1.0 cell | `soft_ce` only |
 | `label_jitter` | 0.5 cell | noise on the target labels |
@@ -234,11 +234,11 @@ and the console capture are off.
 | `train/loss_over_chance_ema` | 0.95 EMA (memory ≈ 20 updates) | the trend; the per-update value is noisy |
 | `train/loss_over_chance/{single, multi}` | the same for queries with 1 / several accepted targets | the floor already includes the extra ln K of multi targets, so the two are on one scale |
 | `train/entropy_norm` (+ `_ema`) | H(p) / log N, entropy of the predicted distribution over the N cells. Replaces `train/softmax_entropy` (= entropy_norm × 7.66 nats at 644 px) | 0 = one-hot, 1 = uniform. For `soft_ce` with sigma 1 the ideal is ≈ 0.43–0.46 (3.3–3.5 nats); `marginal` can go lower. Run 1 in these units: 0.34 at start, peak 0.76 at the end of the warmup, 0.55 at the end. The peak is what the slower warmup should lower |
-| `train/loss_temperature` | loss temperature of the update | 0.07 → 0.05 over the warmup, then flat (only logged with `loss_temperature_start`) |
-| `lr/block_10`, `lr/block_11`, `lr/layernorm` | learning rate per group, used by that update | OneCycleLR: rises over the first `warmup_pct` (10%) of the updates, then cosine to ≈ 0 |
+| `train/loss_temperature` | loss temperature of the update | 0.07 → 0.04 over epoch 0, then flat (only logged with `loss_temperature_start`) |
+| `lr/block_10`, `lr/block_11`, `lr/layernorm` | learning rate per group, used by that update | OneCycleLR: rises over the first `warmup_epochs` (half of epoch 0), then cosine to ≈ 0 |
 | `batch/effective` | samples per update | flat at 16 without `effective_batch_schedule` |
 | `optim/grad_norm` | total gradient norm before clipping | large because the logits are divided by T = 0.03 (×33): not instability. Run 1: 27–44 in epoch 0, ≈ 11 after |
-| `optim/grad_clipped` | 1 when the norm is above `grad_clip` (5) | should be mostly 1 during the warmup and less often after |
+| `optim/grad_clipped` | 1 when the norm is above `grad_clip` (7) | should be mostly 1 during the warmup and less often after |
 
 **Validation (`val/`, each epoch)**
 
