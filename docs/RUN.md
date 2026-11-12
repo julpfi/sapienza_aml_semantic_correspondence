@@ -201,7 +201,7 @@ sections of [REVIEW_finetuning.md](REVIEW_finetuning.md).
 | **Schedule** | | |
 | `epochs` / `early_stop_patience` | 5 / 3 | |
 | `effective_batch` | **16** (was 8), micro-batch auto | ≈ 127 updates per epoch, ≈ 638 in 5 epochs: less noisy gradients than at 8. Optional ramp: `effective_batch_schedule` |
-| `warmup_epochs` | **0.5** (replaces `warmup_pct` 0.10) | OneCycleLR warmup in epochs: lr rises from peak / 25 to the peak over the first half of epoch 0 (≈ 64 updates), then cosine to peak / 25e4. Independent of `epochs`. The peak lr is the last warmup update. Slower warmup against the entropy rise of the first epoch (1.8) |
+| `warmup_epochs` | **1.0** (replaces `warmup_pct` 0.10) | OneCycleLR warmup in epochs: lr rises from peak / 25 to the peak over the whole of epoch 0 (≈ 128 updates), then cosine to peak / 25e4. Independent of `epochs`. The peak lr is the last warmup update. Slower warmup against the entropy rise of the first epoch (1.8) |
 | `grad_clip` | **7.0** (was 5.0) | max total gradient norm. The norm scales with 1 / T: ≈ 11 at T = 0.03 (run 1), so expect ≈ 7 at 0.05. At 5 the clip is a spike guard that still lets the gradient size vary; at 1 every update was clipped (1.9) |
 | precision | fp32 (no AMP) | as in the Lang pipeline; slower and more memory than fp16, so the auto micro-batch is smaller |
 | **Loss** | | |
@@ -235,7 +235,7 @@ and the console capture are off.
 | `train/loss_over_chance/{single, multi}` | the same for queries with 1 / several accepted targets | the floor already includes the extra ln K of multi targets, so the two are on one scale |
 | `train/entropy_norm` (+ `_ema`) | H(p) / log N, entropy of the predicted distribution over the N cells. Replaces `train/softmax_entropy` (= entropy_norm × 7.66 nats at 644 px) | 0 = one-hot, 1 = uniform. For `soft_ce` with sigma 1 the ideal is ≈ 0.43–0.46 (3.3–3.5 nats); `marginal` can go lower. Run 1 in these units: 0.34 at start, peak 0.76 at the end of the warmup, 0.55 at the end. The peak is what the slower warmup should lower |
 | `train/loss_temperature` | loss temperature of the update | 0.07 → 0.04 over epoch 0, then flat (only logged with `loss_temperature_start`) |
-| `lr/block_10`, `lr/block_11`, `lr/layernorm` | learning rate per group, used by that update | OneCycleLR: rises over the first `warmup_epochs` (half of epoch 0), then cosine to ≈ 0 |
+| `lr/block_10`, `lr/block_11`, `lr/layernorm` | learning rate per group, used by that update | OneCycleLR: rises over the first `warmup_epochs` (all of epoch 0), then cosine to ≈ 0 |
 | `batch/effective` | samples per update | flat at 16 without `effective_batch_schedule` |
 | `optim/grad_norm` | total gradient norm before clipping | large because the logits are divided by T = 0.03 (×33): not instability. Run 1: 27–44 in epoch 0, ≈ 11 after |
 | `optim/grad_clipped` | 1 when the norm is above `grad_clip` (7) | should be mostly 1 during the warmup and less often after |

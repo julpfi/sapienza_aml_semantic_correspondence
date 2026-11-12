@@ -148,7 +148,7 @@ BASE = {
     # Optimiser: AdamW + OneCycleLR; each lr below is the peak (max_lr) of its parameter group.
     "lr_backbone": 1.5e-5,             # top trained block (11) and the final LayerNorm
     "layer_decay": 0.75,               # block i from the top gets lr_backbone * layer_decay**i (block 10: 1.125e-5)
-    "warmup_epochs": 0.5,              # OneCycleLR warmup length in epochs (0.5 = half of the first epoch); the peak lr is its last update
+    "warmup_epochs": 1.0,              # OneCycleLR warmup length in epochs (1.0 = the whole first epoch); the peak lr is its last update
     "weight_decay": 0.05,              # AdamW, on every trained parameter
     "grad_clip": 7.0,                  # max total gradient norm
     # Loss (src/models/loss.py explains both):
