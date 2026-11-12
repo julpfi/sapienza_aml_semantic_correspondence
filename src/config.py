@@ -150,7 +150,7 @@ BASE = {
     "layer_decay": 0.75,               # block i from the top gets lr_backbone * layer_decay**i (block 10: 1.125e-5)
     "warmup_epochs": 1.0,              # OneCycleLR warmup length in epochs (1.0 = the whole first epoch); the peak lr is its last update
     "weight_decay": 0.05,              # AdamW, on every trained parameter
-    "grad_clip": 7.0,                  # max total gradient norm
+    "grad_clip": 10.0,                 # max total gradient norm
     # Loss (src/models/loss.py explains both):
     #   "soft_ce"  = cross-entropy with Gaussian bumps on ALL accepted targets (v2). Floor > 0, the
     #                probability is spread over every target, so entropy_norm stays around 0.43-0.46.
@@ -161,7 +161,7 @@ BASE = {
     "loss_temperature": 0.04,          # softmax temperature of the loss (both); lower = sharper
     "loss_temperature_start": 0.07,    # anneal linearly from here to loss_temperature over loss_temperature_epochs;
                                        # None = constant loss_temperature
-    "loss_temperature_epochs": 1.0,    # length of the temperature ramp in epochs (1.0 = the whole first epoch)
+    "loss_temperature_epochs": 2.0,    # length of the temperature ramp in epochs (2.0 = bottom reached at the end of epoch 1)
     "label_sigma": 1.0,                # soft_ce: Gaussian label width in patches (0 = one-hot)
     "marginal_radius": 1.0,            # marginal: positive cells within this many cells of a target (Lang: 1.0)
     "checkpoint_every_steps": 0,       # last.pt every N updates; 0 = end of epoch only (fewer Drive writes)
