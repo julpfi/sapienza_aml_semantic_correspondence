@@ -124,7 +124,7 @@ paired comparison improves PCK@0.05 or the wrong-keypoint rate.
 | T2 lora-ema | done | `python scripts/check_lora_ema.py` → 22 PASS, "ALL PASS" |
 | T3 sd-fusion | done | `python scripts/check_sd_fusion.py` → 24 PASS, "0 failure(s)" (tiny SD test pipeline) |
 | T4 tools-docs | done | `python scripts/compare_runs.py --self-test` → 12 PASS, "All checks passed." |
-| Verification | done | `python -m pytest tests -q` → 7 passed; `python -m ruff check .` → All checks passed!; 5 capped CPU smoke trainings |
+| Verification | done | `python -m pytest tests -q` → 7 passed; `python -m ruff check .` → All checks passed!; build (no build system: bytecode compile exit 0, 27 of 27 modules import, `pip check` clean); 5 capped CPU smoke trainings |
 | Review | done | independent reviewer: PASS WITH ISSUES; 1 blocker + 4 issues fixed (commit `f9b2324`); the rest is listed in `docs/RESUME.md` |
 
 Additions outside the ownership table, approved or found during verification: `tests/test_v3.py`, `ruff.toml`,

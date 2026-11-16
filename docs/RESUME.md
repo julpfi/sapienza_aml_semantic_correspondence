@@ -78,7 +78,11 @@ Not used: no API key, no `.env` read, no MCP server, plugin or skill, no W&B or 
 |---|---|
 | `python -m pytest tests -q` | `7 passed in 103.20s (0:01:43)` |
 | `python -m ruff check .` | `All checks passed!` |
-| `python -m compileall -q run.py src data scripts tests` | exit 0 (there is no other build step) |
+| Build: the repo has no build system (no `setup.py`, `pyproject.toml`, `setup.cfg` or `Makefile`; it is run from source). The three steps below are what "the build succeeds" can mean here | |
+| Build 1: `python -m compileall -q -f run.py src data scripts tests` | `compileall exit 0` (every file compiles to bytecode) |
+| Build 2: import of every module (`run`, `src.*`, `src.models.*`, `src.utils.*`, `data.*`) | `imported 27 of 27 modules; failures: []` |
+| Build 3: environment: `pip check`, and the installed versions against `environment.yml` | `No broken requirements found.`; `16 pins in environment.yml, mismatches with the installed env: []` |
+| `colab/run.ipynb` | valid JSON |
 | `python run.py --mode submit --dry-run` | `Dry run OK: all needed files are present.` |
 | `python scripts/check_pair_batch.py` | 22 PASS, `ALL PASS`; v2 equivalence against `e5cedb8` (loss diff 0, same batches); `0 of 670 queries dropped in 200 augmentations` |
 | `python scripts/check_lora_ema.py` | 22 PASS, `ALL PASS` |
@@ -116,10 +120,29 @@ Known issues left from the review (not fixed):
 - A `last.pt` without an `"ema"` entry restarts the average from the loaded weights on resume.
 - SD features differ slightly between seeds, because the seed sets the SD noise.
 
-Quality findings left as they are (no behaviour change, from the code-reviewer): target parsing and the pair key
-are written both in `src/pair_batch.py` and in `data/datasets.py` (`data/` is read-only here); `collate_pairs` is
-unused; `hard_negative_cells` recomputes cell distances and is called twice per pair; the v3 keys are read with
-`cfg.get(key, default)`, which repeats the `BASE` defaults; `train()` branches on pair mode in about eight places.
+Quality findings of the code-reviewer (report mode). None changes behaviour; all 15 are left as they are and
+listed here as known, because fixing them means editing code that has just been verified:
+
+| # | Where | Finding |
+|---|---|---|
+| 1 | `src/pair_batch.py:69-77` vs `data/datasets.py:67-74` | target and scale parsing and validation written twice (`data/` is read-only in this project's settings, so the shared helper cannot live there yet) |
+| 2 | `src/pair_batch.py:35-41` vs `data/datasets.py:56` | the pair key (`pair_id`, else `src|trg`) and the category fallback derived twice |
+| 3 | `src/pair_batch.py:81` | `collate_pairs` has the same body as `collate_samples` and is not used by `src/train.py` (dead) |
+| 4 | `src/models/loss.py:113-119` | `hard_negative_cells` computes the cell distances twice per query (radius and exclusion) |
+| 5 | `src/models/loss.py:95-96, 119-120` | `positive_cells` recomputes the same distances a third time |
+| 6 | `src/train.py:201-216` | `pair_batch_loss` calls `hard_negative_cells` again only to count cells for the log; the mask is built twice per pair |
+| 7 | `src/models/fusion.py`, `src/models/sd.py`, `src/models/__init__.py`, `src/train.py` | the v3 keys are read with `cfg.get(key, default)`, repeating the `BASE` defaults as magic numbers (0.5, 256, 2, 736, 261, 4, 1.0); the rest of the code uses `cfg[key]`. `sd.py:179`: the `0.18215` VAE scale fallback has no source comment |
+| 8 | `src/train.py:81-107` | the "enable parameters and append a group" block is repeated for LoRA and the adapter |
+| 9 | `src/train.py:70-75`, `src/models/__init__.py:263` | `lora_parameters` / `apply_lora` are imported lazily although `lora.py` imports only torch |
+| 10 | `src/train.py` `train()` | `if pair_mode:` branches at about 8 sites; the `groups_of` / `group_of` construction is the most tangled part |
+| 11 | `src/augment.py` (~135) | one over-indented continuation line; `_flip_pair` repeats the `#flip` / `#aug` cache-key suffix convention of `flip_sample` |
+| 12 | `src/pair_batch.py`, `src/models/loss.py` | naming: pair items use `src_xys` ([K, 2], one point per query) while `trg_xys` means the accepted targets of one query; the same suffix with two meanings |
+| 13 | `src/models/sd.py:175, 190, 224`, `src/models/lora.py:41, 43`, `src/config.py:175, 181, 192` | comment hygiene: `sd.py:224` restates the maths; `config.py:181` ("try 2-4") and `:192` ("try 0.99") are advice, not provenance; `config.py:175` refers to `docs/PLAN.md` (the file exists) |
+| 14 | `src/models/sd.py:132-141` | `_load` re-raises through `i == len(attempts) - 1` inside the loop; clearer with the last attempt outside it |
+| 15 | `src/utils/ema.py:65-66`, `scripts/compare_runs.py:60` | `EMA._params()` rebuilds the parameter dict on every update; `compare_runs.py` hardcodes the `query_id` column name instead of `cfg["csv_columns"]` |
+
+Three of these need your decision (the reviewer's "needs CEO decision"): `cfg.get` vs `cfg[key]` for the v3 keys
+(7), renaming `src_xys` (12, a public item key), and keeping or dropping `collate_pairs` (3).
 
 Risks: every expected gain in the run book is an estimate; pair mode changes the number of updates per epoch, so
 runs with and without it differ in more than one thing; hard negatives can act as label noise.
