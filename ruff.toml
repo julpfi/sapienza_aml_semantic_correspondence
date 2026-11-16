@@ -1,0 +1,8 @@
+# Lint settings of the project: python -m ruff check .
+# pycodestyle + pyflakes (the rules the existing `# noqa: E402` comments refer to). 140 columns: the comment
+# columns of BASE in src/config.py are wider than 120.
+line-length = 140
+extend-exclude = ["*.ipynb"]
+
+[lint]
+select = ["E", "F", "W"]

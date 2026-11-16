@@ -68,7 +68,6 @@ class PCKMeter:
     def update(self, sample, pred_xy, flipped=False):
         if sample.get("trg_xys") is None:
             return
-        cfg = self.cfg
         self.targets[sample["query_id"]] = np.asarray(sample["trg_xys"], dtype=np.float64).reshape(-1, 2)
         self.rows.append({
             "query_id": sample["query_id"],

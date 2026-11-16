@@ -309,7 +309,9 @@ def main():
         parser.error("give A_RUNS and B_RUNS (or --self-test)")
 
     cfg = get_config()
-    split = lambda text: [item.strip() for item in text.split(",") if item.strip()]
+    def split(text):
+        return [item.strip() for item in text.split(",") if item.strip()]
+
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
     folder = Path(cfg["output_dir"]) / f"{stamp}_compare"
     try:
