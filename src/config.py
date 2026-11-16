@@ -138,7 +138,8 @@ BASE = {
     "cache_features_to_disk": False,   # frozen mode only: store backbone features in features_dir
 
     # --- Training (Colab T4; docs/RUN.md section 8) ---
-    "train_mode": "finetune",          # last DINOv2 blocks + final LayerNorm ("frozen" needs a head: old runs only)
+    "train_mode": "finetune",          # last DINOv2 blocks + final LayerNorm ("frozen" needs a head: old runs only;
+                                       # "lora" = LoRA on the last lora_blocks blocks, see the v3 additions)
     "unfreeze_blocks": 2,              # blocks 10 and 11 + final LayerNorm (ViT-B)
     "batch_size": "auto",              # micro-batch: "auto" = largest that fits the GPU x 0.85, or an int
     "effective_batch": 16,             # batch seen by the optimiser (micro-batch x accumulation steps)
@@ -170,6 +171,39 @@ BASE = {
     # selection and early stop are then off, and best.pt = the weights after the last epoch, so set
     # `epochs` to the best epoch count of a validated run first.
     "train_on_val": False,
+
+    # --- v3 additions (docs/PLAN.md). Every default is "off": BASE as it stands reproduces v2. ---
+    # Pair-batched training: one item = one image pair with all its queries, one backbone pass per pair.
+    "pair_batch": False,               # False = one item per query (v2)
+    "pair_effective_batch": 4,         # pairs per optimiser update (~6 queries per pair, so ~25 queries)
+    # Hard negatives (needs pair_batch): cells near the accepted targets of the OTHER queries of the pair
+    # count hard_neg_weight times in the softmax (+log(weight) on their logit). Aims at wrong_keypoint errors.
+    "hard_neg_weight": 1.0,            # 1.0 = off; try 2-4
+    "hard_neg_radius": 1.0,            # cells around another query's target that are negatives
+    "hard_neg_exclusion": 2.0,         # cells around the query's own accepted targets that are never negatives
+    # LoRA (train_mode "lora"): low-rank updates on the attention query/value of the last lora_blocks blocks;
+    # everything else frozen. B starts at zero, so update 0 = frozen DINOv2.
+    "lora_rank": 8,                    # GECO / common range 8-16
+    "lora_alpha": 16,                  # update scale = lora_alpha / lora_rank
+    "lora_dropout": 0.05,
+    "lora_blocks": 6,                  # last N blocks get LoRA
+    "lr_lora": 1e-4,                   # peak lr of the LoRA parameters
+    # EMA of the trained weights: validation and best.pt use the averaged weights.
+    "ema_decay": 0.0,                  # 0 = off; try 0.99 (memory of ~100 updates)
+    # Stable Diffusion features (frozen, DIFT recipe) fused with the DINOv2 features.
+    #   "none"    = DINOv2 only (v2)
+    #   "concat"  = normalize(cat(dino, sd_concat_weight * sd)); nothing trained: the frozen gate
+    #   "adapter" = normalize(dino + adapter(sd)); the adapter's last layer starts at zero (update 0 = DINOv2)
+    "fusion": "none",
+    "sd_model_id": "sd2-community/stable-diffusion-2-1",  # stabilityai/stable-diffusion-2-1 is no longer public
+    "sd_model_revision": "bb2154823665391b4fb29b0b9cf82a198964ee05",  # Hub commit, checked 2026-11-16
+    "sd_image_size": 736,              # SD input side; up-block 1 is 1/16 of it: 46 cells = the DINOv2 grid at 644
+    "sd_timestep": 261,                # DIFT noising step
+    "sd_up_block": 1,                  # decoder block whose output is the feature map (DIFT: 1)
+    "sd_concat_weight": 0.5,           # weight of the SD part in "concat"
+    "adapter_layers": 2,               # bottleneck blocks after the 1x1 input convolution
+    "adapter_dim": 256,                # bottleneck width
+    "lr_adapter": 1e-4,                # peak lr of the adapter (the old head at 1e-3 flattened the maps)
 
     # --- Augmentation (train only; source and target images are augmented separately) ---
     "flip_augment": True,              # Lang ft_pair_flip_aug (both images, keeps left/right consistent)
