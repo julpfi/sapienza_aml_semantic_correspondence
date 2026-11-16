@@ -33,11 +33,11 @@ class Fusion(nn.Module):
         self.kind = kind
         self.out_dim = dino_dim + sd_dim if kind == "concat" else dino_dim
         if kind == "concat":
-            self.sd_weight = cfg.get("sd_concat_weight", 0.5)
+            self.sd_weight = cfg["sd_concat_weight"]
             return
-        hidden = cfg.get("adapter_dim", 256)
+        hidden = cfg["adapter_dim"]
         self.inp = nn.Conv2d(sd_dim, dino_dim, kernel_size=1)
-        self.blocks = nn.Sequential(*[_Bottleneck(dino_dim, hidden) for _ in range(cfg.get("adapter_layers", 2))])
+        self.blocks = nn.Sequential(*[_Bottleneck(dino_dim, hidden) for _ in range(cfg["adapter_layers"])])
         self.out = nn.Conv2d(dino_dim, dino_dim, kernel_size=1)
         nn.init.zeros_(self.out.weight)
         nn.init.zeros_(self.out.bias)

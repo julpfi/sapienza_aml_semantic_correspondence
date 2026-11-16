@@ -37,7 +37,8 @@ from data.transforms import preprocess_image, to_resized
 from src.augment import augment_pair, augment_sample, augmentation_enabled
 from src.evaluate import evaluate
 from src.metrics import target_group
-from src.models.loss import LOGGED_STATS, LOSS_STATS, hard_negative_cells, matching_loss, pair_matching_loss
+from src.models.loss import LOGGED_STATS, LOSS_STATS, matching_loss, pair_matching_loss
+from src.models.lora import lora_parameters
 from src.pair_batch import PairDataset
 from src.utils.batch_size import fake_samples, find_micro_batch
 from src.utils.checkpoint import (
@@ -64,7 +65,7 @@ def configure_trainable(model, cfg):
     """
     if cfg["train_mode"] not in TRAIN_MODES:
         raise ValueError(f"train_mode must be one of {TRAIN_MODES}, got {cfg['train_mode']!r}")
-    if cfg["train_mode"] == "frozen" and cfg.get("fusion", "none") != "none":
+    if cfg["train_mode"] == "frozen" and cfg["fusion"] != "none":
         # The frozen path reads backbone features directly (and may cache them), so it would skip the fusion.
         raise ValueError("fusion needs train_mode 'finetune' or 'lora': the frozen path bypasses the SD features.")
     model.backbone.freeze()
@@ -85,20 +86,19 @@ def configure_trainable(model, cfg):
     groups = [{"name": name, "params": [p for p in module.parameters() if p.requires_grad], "lr": lr}
               for name, module, lr in parts]
     groups = [g for g in groups if g["params"]]
-    if cfg["train_mode"] == "lora":
-        from src.models.lora import lora_parameters
 
+    def add_group(name, params, lr):
+        for p in params:
+            p.requires_grad_(True)
+        groups.append({"name": name, "params": params, "lr": lr})
+
+    if cfg["train_mode"] == "lora":
         params = list(lora_parameters(model))
         if not params:
             raise ValueError("train_mode='lora' but the model has no LoRA parameters (apply_lora not called?).")
-        for p in params:
-            p.requires_grad_(True)
-        groups.append({"name": "lora", "params": params, "lr": cfg["lr_lora"]})
-    if cfg.get("fusion", "none") == "adapter":
-        params = list(model.fusion.parameters())
-        for p in params:
-            p.requires_grad_(True)
-        groups.append({"name": "adapter", "params": params, "lr": cfg["lr_adapter"]})
+        add_group("lora", params, cfg["lr_lora"])
+    if cfg["fusion"] == "adapter":
+        add_group("adapter", list(model.fusion.parameters()), cfg["lr_adapter"])
     if not groups:
         raise ValueError("Nothing to train: train_mode='frozen' with head='none'. Use train_mode='finetune' "
                          "in BASE (src/config.py), or add head='linear' and lr_head for a head-only run.")
@@ -111,8 +111,8 @@ def configure_trainable(model, cfg):
 def effective_batch_for(epoch, cfg):
     """Effective batch of an epoch: effective_batch, or the last ramp entry whose start epoch has passed.
     pair_batch: pair_effective_batch pairs (the ramp, counted in queries, is not used)."""
-    if cfg.get("pair_batch"):
-        return cfg.get("pair_effective_batch", 4)
+    if cfg["pair_batch"]:
+        return cfg["pair_effective_batch"]
     schedule = cfg["effective_batch_schedule"]
     if not schedule:
         return cfg["effective_batch"]
@@ -203,16 +203,18 @@ def pair_batch_loss(model, items, cfg, store, train=True, temperature=None):
     tensors [total queries] in item order, and the hard-negative cells per query [total queries]
     (None when hard negatives are off). Label jitter moves the own targets only, not the negatives."""
     src_feats, trg_feats = compute_features(model, items, cfg, store)
-    size, (h, w) = cfg["image_size"], trg_feats.shape[-2:]
-    hard = cfg.get("hard_neg_weight", 1.0) > 1
+    size, w = cfg["image_size"], trg_feats.shape[-1]
+    hard = cfg["hard_neg_weight"] > 1
     stats, n_negatives = [], []
     for b, item in enumerate(items):
         trg = [to_resized(xys, item["trg_img"].size, size) for xys in item["trg_xys"]]
         own = [jitter_labels(t, size, w, cfg["label_jitter"]) for t in trg] if train else trg
         src = to_resized(item["src_xys"], item["src_img"].size, size)
-        stats.append(pair_matching_loss(src_feats[b], trg_feats[b], src, own, cfg, temperature, neg_xys_resized=trg))
+        item_stats, item_negatives = pair_matching_loss(src_feats[b], trg_feats[b], src, own, cfg, temperature,
+                                                        neg_xys_resized=trg, return_negatives=True)
+        stats.append(item_stats)
         if hard:
-            n_negatives.append(hard_negative_cells(trg, h, w, cfg, trg_feats.device, pos_xys_resized=own).sum(-1))
+            n_negatives.append(item_negatives)
     return tuple(torch.cat(values) for values in zip(*stats)), torch.cat(n_negatives) if hard else None
 
 
@@ -245,8 +247,8 @@ def choose_micro_batch(model, cfg, groups):
             for p in g["params"]:
                 p.grad = None
 
-    if cfg.get("pair_batch"):  # one pair = two images, like one fake sample
-        max_batch = cfg.get("pair_effective_batch", 4)
+    if cfg["pair_batch"]:  # one pair = two images, like one fake sample
+        max_batch = cfg["pair_effective_batch"]
     else:
         max_batch = (cfg["effective_batch"] if not cfg["effective_batch_schedule"]
                      else max(cfg["effective_batch_schedule"].values()))
@@ -273,8 +275,8 @@ def train(cfg, model, run_id, run_dir, resume=False):
     """Train and return the best validation PCK (in percent)."""
     from src.diagnostics import log_evaluation, plot_worst_predictions
 
-    pair_mode = bool(cfg.get("pair_batch"))
-    if cfg.get("hard_neg_weight", 1.0) > 1 and not pair_mode:
+    pair_mode = bool(cfg["pair_batch"])
+    if cfg["hard_neg_weight"] > 1 and not pair_mode:
         raise ValueError("hard_neg_weight > 1 needs pair_batch=True: the negatives come from the other "
                          "queries of the same pair.")
     groups = configure_trainable(model, cfg)
@@ -307,7 +309,7 @@ def train(cfg, model, run_id, run_dir, resume=False):
     unit = "pairs" if pair_mode else "queries"
     if pair_mode:
         print(f"pair_batch: {len(dataset)} training pairs with {n_queries} queries "
-              f"({n_queries / len(dataset):.1f} per pair), hard_neg_weight {cfg.get('hard_neg_weight', 1.0)}")
+              f"({n_queries / len(dataset):.1f} per pair), hard_neg_weight {cfg['hard_neg_weight']}")
     print(f"{len(dataset)} training {unit}, micro-batch {micro}, effective batch "
           f"{[micro * a for a, _ in plan]} {unit} per epoch, {total_updates} updates in {cfg['epochs']} epochs")
     warmup_updates = max(1, updates_in_epochs(plan, cfg["warmup_epochs"]))
@@ -347,7 +349,7 @@ def train(cfg, model, run_id, run_dir, resume=False):
         load_model_weights(model, init["model"])
         print(f"Initialised from {cfg['init_artifact']}")
     ema_weights = None
-    if cfg.get("ema_decay", 0) > 0:  # after every weight load, so the average starts from those weights
+    if cfg["ema_decay"] > 0:  # after every weight load, so the average starts from those weights
         from src.utils.ema import EMA
 
         ema_weights = EMA(model, cfg["ema_decay"])

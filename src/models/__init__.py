@@ -10,6 +10,7 @@ from data.transforms import preprocess_image
 from src.config import resolved_device
 from src.models.backbone import DinoBackbone
 from src.models.head import ProjectionHead
+from src.models.lora import apply_lora
 from src.models.matching import FeatureCache, choose_source, predict_from_features
 
 
@@ -18,15 +19,13 @@ class CorrespondenceModel(nn.Module):
         super().__init__()
         self.cfg = cfg
         self.backbone = DinoBackbone(cfg)
-        if cfg.get("train_mode") == "lora":
-            from src.models.lora import apply_lora
-
+        if cfg["train_mode"] == "lora":
             apply_lora(self.backbone, cfg)
         in_dim = self.backbone.model.config.hidden_size
         out_dim = in_dim if cfg["head"] == "none" or cfg.get("head_dim") is None else cfg["head_dim"]
         self.head = ProjectionHead(cfg["head"], in_dim, out_dim)
         # Imported only here, so fusion "none" never imports diffusers and keeps the v2 state-dict keys.
-        fusion = cfg.get("fusion", "none")
+        fusion = cfg["fusion"]
         if fusion != "none":
             from src.models.fusion import Fusion
             from src.models.sd import SDFeatures

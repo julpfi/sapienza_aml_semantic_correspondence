@@ -147,7 +147,7 @@ def augment_pair(item, cfg):
     alive = np.ones(n_queries, dtype=bool)
 
     src_img, src_xys, _, alive = _geometric_pair(item["src_img"], np.asarray(item["src_xys"], np.float64),
-                                                        np.arange(n_queries), alive, cfg)
+                                                 np.arange(n_queries), alive, cfg)
     item["src_img"] = _photometric(src_img, cfg)
 
     counts = [len(xys) for xys in item["trg_xys"]]

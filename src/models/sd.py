@@ -31,12 +31,12 @@ def _load(cls, source, revision, subfolder, dtype):
     """from_pretrained preferring the fp16 safetensors variant, then any safetensors, then .bin
     (the tiny test repo has only .bin files and no variant)."""
     attempts = ({"variant": "fp16", "use_safetensors": True}, {"use_safetensors": True}, {})
-    for i, extra in enumerate(attempts):
+    for extra in attempts[:-1]:
         try:
             return cls.from_pretrained(source, subfolder=subfolder, revision=revision, torch_dtype=dtype, **extra)
         except (OSError, ValueError):
-            if i == len(attempts) - 1:
-                raise
+            pass
+    return cls.from_pretrained(source, subfolder=subfolder, revision=revision, torch_dtype=dtype, **attempts[-1])
 
 
 class SDFeatures(nn.Module):
@@ -66,14 +66,15 @@ class SDFeatures(nn.Module):
             prompt = text_encoder(tokens.input_ids)[0]  # [1, 77, D]
         del text_encoder, tokenizer
 
-        self.up_block = cfg.get("sd_up_block", 1)
+        self.up_block = cfg["sd_up_block"]
         if not 0 <= self.up_block < len(self.unet.up_blocks):
             raise ValueError(f"sd_up_block must be in [0, {len(self.unet.up_blocks)}), got {self.up_block}")
-        self.image_size = cfg.get("sd_image_size", 736)
+        self.image_size = cfg["sd_image_size"]
         # Clamped for tiny test schedulers with fewer steps.
-        self.timestep = min(int(cfg.get("sd_timestep", 261)), scheduler.config.num_train_timesteps - 1)
+        self.timestep = min(int(cfg["sd_timestep"]), scheduler.config.num_train_timesteps - 1)
         alpha = scheduler.alphas_cumprod[self.timestep].item()
         self.noise_scale = (alpha ** 0.5, (1 - alpha) ** 0.5)
+        # Stable Diffusion latent scaling factor, used when the VAE config has none
         self.latent_scale = getattr(self.vae.config, "scaling_factor", None) or 0.18215
         self.out_dim = list(reversed(self.unet.config.block_out_channels))[self.up_block]
 
@@ -119,7 +120,7 @@ class SDFeatures(nn.Module):
     @torch.no_grad()
     def forward(self, x, out_hw):
         p = next(self.unet.parameters())
-        rgb = (x.float() * self.std + self.mean) * 2 - 1  # DINO normalisation -> [-1, 1]
+        rgb = (x.float() * self.std + self.mean) * 2 - 1
         rgb = F.interpolate(rgb, size=(self.image_size, self.image_size), mode="bilinear", align_corners=False)
         latents = self.vae.encode(rgb.to(p.dtype)).latent_dist.mean * self.latent_scale
         # Same noise for every image: features do not depend on the batch or on source / target.

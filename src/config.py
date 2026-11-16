@@ -178,7 +178,7 @@ BASE = {
     "pair_effective_batch": 4,         # pairs per optimiser update (~6 queries per pair, so ~25 queries)
     # Hard negatives (needs pair_batch): cells near the accepted targets of the OTHER queries of the pair
     # count hard_neg_weight times in the softmax (+log(weight) on their logit). Aims at wrong_keypoint errors.
-    "hard_neg_weight": 1.0,            # 1.0 = off; try 2-4
+    "hard_neg_weight": 1.0,            # 1.0 = off
     "hard_neg_radius": 1.0,            # cells around another query's target that are negatives
     "hard_neg_exclusion": 2.0,         # cells around the query's own accepted targets that are never negatives
     # LoRA (train_mode "lora"): low-rank updates on the attention query/value of the last lora_blocks blocks;
@@ -189,7 +189,7 @@ BASE = {
     "lora_blocks": 6,                  # last N blocks get LoRA
     "lr_lora": 1e-4,                   # peak lr of the LoRA parameters
     # EMA of the trained weights: validation and best.pt use the averaged weights.
-    "ema_decay": 0.0,                  # 0 = off; try 0.99 (memory of ~100 updates)
+    "ema_decay": 0.0,                  # 0 = off; 0.99 = memory of ~100 updates
     # Stable Diffusion features (frozen, DIFT recipe) fused with the DINOv2 features.
     #   "none"    = DINOv2 only (v2)
     #   "concat"  = normalize(cat(dino, sd_concat_weight * sd)); nothing trained: the frozen gate

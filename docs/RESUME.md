@@ -35,7 +35,7 @@ The real test of every addition is the Colab run order in [experiments-sd.md](ex
 | sd-fusion | Opus | T3 |
 | tools-docs | Sonnet | T4 |
 | reviewer | Opus, read-only | independent review of the whole diff against PLAN.md; wrote no code |
-| code-reviewer | Sonnet, report mode | quality pass; changed nothing |
+| code-reviewer | Sonnet | quality pass in report mode (15 findings), then fix mode for the cleanups you approved |
 
 ## 4. Resources used
 
@@ -66,6 +66,9 @@ Not used: no API key, no `.env` read, no MCP server, plugin or skill, no W&B or 
 - **`train_mode "frozen"` with fusion is an error**, because that path would skip the SD features.
 - **Old runs** (config.json without the v3 keys) load with the switches off (`V3_OFF`), whatever `BASE` says.
 - **Tests:** the repo had none (D-004). The suite is a pytest wrapper around the check scripts, as you approved.
+- **Your decisions during execution:** install ruff locally; a pytest wrapper as the test suite; apply the neutral
+  quality cleanups; `cfg[key]` for the v3 keys; keep the `src_xys` name; accept bytecode compile + module imports
+  + dependency check as the build, since the repo has no build system (they are now part of the pytest suite).
 - **Lint:** `ruff.toml` selects pycodestyle + pyflakes (what the existing `# noqa: E402` comments refer to) at
   140 columns, the width of the comment columns in `BASE`. Stricter rule sets report style issues in v2 files.
 - **Smoke runs used an in-memory config** instead of editing and restoring `BASE`, so `src/config.py` was never
@@ -76,7 +79,7 @@ Not used: no API key, no `.env` read, no MCP server, plugin or skill, no W&B or 
 
 | Command | Result |
 |---|---|
-| `python -m pytest tests -q` | `7 passed in 103.20s (0:01:43)` |
+| `python -m pytest tests -q` | `10 passed in 146.41s (0:02:26)` (8 command checks, every module imports, environment matches the pins) |
 | `python -m ruff check .` | `All checks passed!` |
 | Build: the repo has no build system (no `setup.py`, `pyproject.toml`, `setup.cfg` or `Makefile`; it is run from source). The three steps below are what "the build succeeds" can mean here | |
 | Build 1: `python -m compileall -q -f run.py src data scripts tests` | `compileall exit 0` (every file compiles to bytecode) |
@@ -93,8 +96,8 @@ Not used: no API key, no `.env` read, no MCP server, plugin or skill, no W&B or 
 Capped CPU smoke trainings (16 queries, 1 epoch, 224 px, tiny SD, W&B off): `v2_default`, `pair_hardneg_marginal`,
 `lora_ema`, `adapter_fusion`, `all_on`. All five finished, wrote `best.pt`, and a rebuilt model reloaded it and
 predicted a finite point. `best.pt` held 24 LoRA tensors in the LoRA runs, 16 adapter tensors in the adapter runs,
-and no SD tensor in any run. They ran before the review fixes; the changed code paths (pair augmentation, old-run
-loading) were re-checked by the check script and the snippet above, not by a new smoke run.
+and no SD tensor in any run. They were run twice: before the review fixes, and again on the final code after the
+review fixes and the quality cleanups, with the same outcome.
 
 Independent review: verdict PASS WITH ISSUES. Fixed in `f9b2324`: the blocker (pair augmentation dropped 16% of
 the queries) and the four issues (old-run config loading, the equivalence checks compared the code with itself
@@ -120,29 +123,27 @@ Known issues left from the review (not fixed):
 - A `last.pt` without an `"ema"` entry restarts the average from the loaded weights on resume.
 - SD features differ slightly between seeds, because the seed sets the SD noise.
 
-Quality findings of the code-reviewer (report mode). None changes behaviour; all 15 are left as they are and
-listed here as known, because fixing them means editing code that has just been verified:
+Quality findings of the code-reviewer (15, none a bug). You decided: fix the neutral ones, read the v3 keys as
+`cfg[key]`, keep the `src_xys` name. Result (fixes applied by the code-reviewer agent, then re-verified by the
+full suite and the smoke runs):
 
-| # | Where | Finding |
+| # | Finding | Status |
 |---|---|---|
-| 1 | `src/pair_batch.py:69-77` vs `data/datasets.py:67-74` | target and scale parsing and validation written twice (`data/` is read-only in this project's settings, so the shared helper cannot live there yet) |
-| 2 | `src/pair_batch.py:35-41` vs `data/datasets.py:56` | the pair key (`pair_id`, else `src|trg`) and the category fallback derived twice |
-| 3 | `src/pair_batch.py:81` | `collate_pairs` has the same body as `collate_samples` and is not used by `src/train.py` (dead) |
-| 4 | `src/models/loss.py:113-119` | `hard_negative_cells` computes the cell distances twice per query (radius and exclusion) |
-| 5 | `src/models/loss.py:95-96, 119-120` | `positive_cells` recomputes the same distances a third time |
-| 6 | `src/train.py:201-216` | `pair_batch_loss` calls `hard_negative_cells` again only to count cells for the log; the mask is built twice per pair |
-| 7 | `src/models/fusion.py`, `src/models/sd.py`, `src/models/__init__.py`, `src/train.py` | the v3 keys are read with `cfg.get(key, default)`, repeating the `BASE` defaults as magic numbers (0.5, 256, 2, 736, 261, 4, 1.0); the rest of the code uses `cfg[key]`. `sd.py:179`: the `0.18215` VAE scale fallback has no source comment |
-| 8 | `src/train.py:81-107` | the "enable parameters and append a group" block is repeated for LoRA and the adapter |
-| 9 | `src/train.py:70-75`, `src/models/__init__.py:263` | `lora_parameters` / `apply_lora` are imported lazily although `lora.py` imports only torch |
-| 10 | `src/train.py` `train()` | `if pair_mode:` branches at about 8 sites; the `groups_of` / `group_of` construction is the most tangled part |
-| 11 | `src/augment.py` (~135) | one over-indented continuation line; `_flip_pair` repeats the `#flip` / `#aug` cache-key suffix convention of `flip_sample` |
-| 12 | `src/pair_batch.py`, `src/models/loss.py` | naming: pair items use `src_xys` ([K, 2], one point per query) while `trg_xys` means the accepted targets of one query; the same suffix with two meanings |
-| 13 | `src/models/sd.py:175, 190, 224`, `src/models/lora.py:41, 43`, `src/config.py:175, 181, 192` | comment hygiene: `sd.py:224` restates the maths; `config.py:181` ("try 2-4") and `:192` ("try 0.99") are advice, not provenance; `config.py:175` refers to `docs/PLAN.md` (the file exists) |
-| 14 | `src/models/sd.py:132-141` | `_load` re-raises through `i == len(attempts) - 1` inside the loop; clearer with the last attempt outside it |
-| 15 | `src/utils/ema.py:65-66`, `scripts/compare_runs.py:60` | `EMA._params()` rebuilds the parameter dict on every update; `compare_runs.py` hardcodes the `query_id` column name instead of `cfg["csv_columns"]` |
-
-Three of these need your decision (the reviewer's "needs CEO decision"): `cfg.get` vs `cfg[key]` for the v3 keys
-(7), renaming `src_xys` (12, a public item key), and keeping or dropping `collate_pairs` (3).
+| 1 | target and scale parsing written twice (`src/pair_batch.py`, `data/datasets.py`) | **known**: `data/` is read-only in this project's settings, so the shared helper cannot live there |
+| 2 | pair key and category fallback derived twice (same two files) | **known**: same reason |
+| 3 | `collate_pairs` unused, same body as `collate_samples` | fixed: removed |
+| 4 | `hard_negative_cells` computed the cell distances twice | fixed: computed once per query |
+| 5 | `positive_cells` recomputed them a third time | fixed: optional precomputed distances (used when the labels are not jittered) |
+| 6 | hard-negative mask built twice per pair (loss and log) | fixed: `pair_matching_loss(..., return_negatives=True)` returns the count |
+| 7 | v3 keys read with `cfg.get(key, default)`, repeating `BASE` defaults | fixed: `cfg[key]` everywhere; the VAE scale fallback `0.18215` has a source comment |
+| 8 | repeated "enable and append a group" block in `configure_trainable` | fixed: local `add_group` helper |
+| 9 | lazy imports of `lora_parameters` / `apply_lora` | fixed: imported at module top (diffusers stays lazy) |
+| 10 | `train()` branches on pair mode at about 8 sites | **known**: a refactor of the training loop, not done |
+| 11 | over-indented line in `augment_pair`; `#flip` / `#aug` suffix convention repeated in `_flip_pair` | line fixed; the suffix repetition is **known** |
+| 12 | `src_xys` ([K, 2], one point per query) vs `trg_xys` (accepted targets of one query) | **known, by your decision**: name kept; shapes are documented in `src/pair_batch.py` |
+| 13 | comment hygiene (`sd.py`, `config.py` advice comments) | fixed: the restating comment removed, the two `config.py` comments trimmed |
+| 14 | `_load` loop in `src/models/sd.py` | fixed: last attempt outside the loop |
+| 15 | `EMA._params()` rebuilt the dict on every update; `compare_runs.py` hardcodes the `query_id` column | EMA fixed; the column name in the standalone script is **known** |
 
 Risks: every expected gain in the run book is an estimate; pair mode changes the number of updates per epoch, so
 runs with and without it differ in more than one thing; hard negatives can act as label noise.

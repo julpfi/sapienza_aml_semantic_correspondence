@@ -56,10 +56,12 @@ def target_distribution(trg_xys_resized, h, w, image_size, sigma, device):
     return target / target.sum()
 
 
-def positive_cells(trg_xys_resized, h, w, image_size, radius, device):
+def positive_cells(trg_xys_resized, h, w, image_size, radius, device, dist=None):
     """marginal positives: bool [h*w], cells within `radius` cells of any accepted target, plus the
-    nearest cell of each target (so a target always has at least one positive)."""
-    dist = _cell_distances(trg_xys_resized, h, w, image_size, device)
+    nearest cell of each target (so a target always has at least one positive).
+    dist: the _cell_distances of trg_xys_resized when the caller already has them."""
+    if dist is None:
+        dist = _cell_distances(trg_xys_resized, h, w, image_size, device)
     mask = (dist <= radius).any(0)
     mask[dist.argmin(-1)] = True
     return mask
@@ -111,17 +113,18 @@ def hard_negative_cells(neg_xys_resized, h, w, cfg, device, pos_xys_resized=None
     """
     size = cfg["image_size"]
     pos_xys_resized = neg_xys_resized if pos_xys_resized is None else pos_xys_resized
-    near = [(_cell_distances(xys, h, w, size, device) <= cfg["hard_neg_radius"]).any(0) for xys in neg_xys_resized]
-    near = torch.stack(near)  # [K, h*w]
+    dists = [_cell_distances(xys, h, w, size, device) for xys in neg_xys_resized]  # K x [N_k, h*w]
+    near = torch.stack([(dist <= cfg["hard_neg_radius"]).any(0) for dist in dists])  # [K, h*w]
     others = near.sum(0, keepdim=True) - near.long() > 0  # near the targets of at least one other query
-    own = torch.stack([(_cell_distances(xys, h, w, size, device) <= cfg["hard_neg_exclusion"]).any(0)
-                       | positive_cells(pos, h, w, size, cfg["marginal_radius"], device)
-                       for xys, pos in zip(neg_xys_resized, pos_xys_resized)])
+    own = torch.stack([(dist <= cfg["hard_neg_exclusion"]).any(0)
+                       | positive_cells(pos, h, w, size, cfg["marginal_radius"], device,
+                                        dist=dist if pos is xys else None)
+                       for xys, pos, dist in zip(neg_xys_resized, pos_xys_resized, dists)])
     return others & ~own
 
 
 def pair_matching_loss(src_feats, trg_feats, src_xys_resized, trg_xys_resized, cfg, temperature=None,
-                       neg_xys_resized=None):
+                       neg_xys_resized=None, return_negatives=False):
     """matching_loss for all K queries of one image pair, from one similarity [K, h*w].
 
     src_feats, trg_feats [C, h, w]; src_xys_resized [K, 2]; trg_xys_resized: K tensors [N_k, 2] (the
@@ -131,15 +134,18 @@ def pair_matching_loss(src_feats, trg_feats, src_xys_resized, trg_xys_resized, c
     before the softmax: the cell counts weight times in the partition function. loss_over_chance keeps
     the chance / floor of matching_loss (so it can exceed 1 more easily), and entropy_norm is the
     entropy of the biased softmax. With weight 1 every query gives exactly matching_loss.
-    Returns the three LOSS_STATS as tensors [K], gradients on the first only.
+    Returns the three LOSS_STATS as tensors [K], gradients on the first only. With return_negatives:
+    (those three, hard-negative cell count per query [K] or None when hard_neg_weight is 1).
     """
     _, h, w = trg_feats.shape
     queries = sample_point_features(src_feats, src_xys_resized.to(src_feats.device), cfg["image_size"])  # [K, C]
     logits = (queries @ trg_feats.flatten(1)) / (temperature or cfg["loss_temperature"])  # [K, h*w]
-    weight = cfg.get("hard_neg_weight", 1.0)
+    weight, n_negatives = cfg["hard_neg_weight"], None
     if weight > 1:
         negatives = hard_negative_cells(trg_xys_resized if neg_xys_resized is None else neg_xys_resized,
                                         h, w, cfg, trg_feats.device, pos_xys_resized=trg_xys_resized)
         logits = logits + math.log(weight) * negatives
+        n_negatives = negatives.sum(-1)
     stats = [_query_loss(logits[k], trg_xys_resized[k], (h, w), cfg, trg_feats.device) for k in range(len(logits))]
-    return tuple(torch.stack(values) for values in zip(*stats))
+    stats = tuple(torch.stack(values) for values in zip(*stats))
+    return (stats, n_negatives) if return_negatives else stats

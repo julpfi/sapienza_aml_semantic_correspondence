@@ -76,8 +76,3 @@ class PairDataset(Dataset):
             item["trg_xys"].append(trg_xys)
             item["scale"].append(scale)
         return item
-
-
-def collate_pairs(batch):
-    """Keep variable-size images and per-query lists as a plain list of pair dicts."""
-    return batch
