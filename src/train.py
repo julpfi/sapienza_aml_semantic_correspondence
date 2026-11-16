@@ -8,6 +8,11 @@ Batch: the optimiser sees `effective_batch` samples per update = micro-batch x a
     The micro-batch is the largest that fits the GPU (batch_size="auto", src/utils/batch_size.py).
 Optimiser: AdamW (weight_decay) with OneCycleLR over all updates: warmup for warmup_epochs of them
     from max_lr / 25, then cosine down to max_lr / 25e4. One parameter group (own max_lr) per trained part.
+pair_batch: one item = one image pair with all its queries (src/pair_batch.py), one backbone pass per
+    image; batches and effective batch count pairs (pair_effective_batch), the loss of an update is the
+    mean over its queries, and hard_neg_weight > 1 adds hard negatives (src/models/loss.py).
+train_mode="lora": only the LoRA weights (src/models/lora.py); fusion="adapter" also trains model.fusion.
+ema_decay > 0: an EMA of the trained weights (src/utils/ema.py) is validated and saved as best.pt.
 Each epoch: validation PCK and its gain over the previous epoch against the 95% interval
 (history.json, W&B), best.pt when it improves, last.pt for --resume, early stop after
 `early_stop_patience` epochs without improvement.
@@ -19,6 +24,7 @@ import math
 import random
 import time
 from collections import defaultdict
+from contextlib import contextmanager
 
 import numpy as np
 import pandas as pd
@@ -28,10 +34,11 @@ from tqdm.auto import tqdm
 
 from data.datasets import QueryDataset, build_dataset, collate_samples, read_queries
 from data.transforms import preprocess_image, to_resized
-from src.augment import augment_sample, augmentation_enabled
+from src.augment import augment_pair, augment_sample, augmentation_enabled
 from src.evaluate import evaluate
 from src.metrics import target_group
-from src.models.loss import LOGGED_STATS, LOSS_STATS, matching_loss
+from src.models.loss import LOGGED_STATS, LOSS_STATS, hard_negative_cells, matching_loss, pair_matching_loss
+from src.pair_batch import PairDataset
 from src.utils.batch_size import fake_samples, find_micro_batch
 from src.utils.checkpoint import (
     checkpoint_path, download_artifact, load_checkpoint, load_model_weights, publish_best, save_checkpoint,
@@ -41,7 +48,7 @@ from src.utils.feature_store import FeatureStore
 from src.utils.run import git_commit, seed_everything
 from src.utils.wandb_log import init_wandb
 
-TRAIN_MODES = ("frozen", "finetune")
+TRAIN_MODES = ("frozen", "finetune", "lora")
 
 
 # ---------------------------------------------------------------------------
@@ -52,23 +59,46 @@ def configure_trainable(model, cfg):
 
     Block i from the top: lr_backbone * layer_decay**i. Final LayerNorm: lr_backbone.
     Head (only runs whose config has head != "none"): lr_head.
+    train_mode "lora": one group with the LoRA weights (lr_lora) instead of the blocks and LayerNorm.
+    fusion "adapter": one more group with model.fusion (lr_adapter). model.sd is never trained.
     """
     if cfg["train_mode"] not in TRAIN_MODES:
         raise ValueError(f"train_mode must be one of {TRAIN_MODES}, got {cfg['train_mode']!r}")
+    if cfg["train_mode"] == "frozen" and cfg.get("fusion", "none") != "none":
+        # The frozen path reads backbone features directly (and may cache them), so it would skip the fusion.
+        raise ValueError("fusion needs train_mode 'finetune' or 'lora': the frozen path bypasses the SD features.")
     model.backbone.freeze()
     if cfg["train_mode"] == "finetune":
         model.backbone.unfreeze_last(cfg["unfreeze_blocks"])
     for p in model.head.parameters():
         p.requires_grad_(True)
 
+    if isinstance(getattr(model, "sd", None), torch.nn.Module):
+        model.sd.requires_grad_(False)
+
     blocks = list(model.backbone.blocks)
     parts = [("head", model.head, cfg["lr_head"])] if cfg["head"] != "none" else []
-    parts += [(f"block_{len(blocks) - 1 - depth}", block, cfg["lr_backbone"] * cfg["layer_decay"] ** depth)
-              for depth, block in enumerate(reversed(blocks))]
-    parts.append(("layernorm", model.backbone.layernorm, cfg["lr_backbone"]))
+    if cfg["train_mode"] != "lora":  # the LoRA weights sit inside the blocks: they get their own group
+        parts += [(f"block_{len(blocks) - 1 - depth}", block, cfg["lr_backbone"] * cfg["layer_decay"] ** depth)
+                  for depth, block in enumerate(reversed(blocks))]
+        parts.append(("layernorm", model.backbone.layernorm, cfg["lr_backbone"]))
     groups = [{"name": name, "params": [p for p in module.parameters() if p.requires_grad], "lr": lr}
               for name, module, lr in parts]
     groups = [g for g in groups if g["params"]]
+    if cfg["train_mode"] == "lora":
+        from src.models.lora import lora_parameters
+
+        params = list(lora_parameters(model))
+        if not params:
+            raise ValueError("train_mode='lora' but the model has no LoRA parameters (apply_lora not called?).")
+        for p in params:
+            p.requires_grad_(True)
+        groups.append({"name": "lora", "params": params, "lr": cfg["lr_lora"]})
+    if cfg.get("fusion", "none") == "adapter":
+        params = list(model.fusion.parameters())
+        for p in params:
+            p.requires_grad_(True)
+        groups.append({"name": "adapter", "params": params, "lr": cfg["lr_adapter"]})
     if not groups:
         raise ValueError("Nothing to train: train_mode='frozen' with head='none'. Use train_mode='finetune' "
                          "in BASE (src/config.py), or add head='linear' and lr_head for a head-only run.")
@@ -79,7 +109,10 @@ def configure_trainable(model, cfg):
 # Batch sizes
 # ---------------------------------------------------------------------------
 def effective_batch_for(epoch, cfg):
-    """Effective batch of an epoch: effective_batch, or the last ramp entry whose start epoch has passed."""
+    """Effective batch of an epoch: effective_batch, or the last ramp entry whose start epoch has passed.
+    pair_batch: pair_effective_batch pairs (the ramp, counted in queries, is not used)."""
+    if cfg.get("pair_batch"):
+        return cfg.get("pair_effective_batch", 4)
     schedule = cfg["effective_batch_schedule"]
     if not schedule:
         return cfg["effective_batch"]
@@ -165,6 +198,24 @@ def batch_loss(model, samples, cfg, store, train=True, temperature=None):
     return tuple(torch.stack(values) for values in zip(*stats))
 
 
+def pair_batch_loss(model, items, cfg, store, train=True, temperature=None):
+    """batch_loss for a micro-batch of pairs (src/pair_batch.py): the LOSS_STATS of every query, three
+    tensors [total queries] in item order, and the hard-negative cells per query [total queries]
+    (None when hard negatives are off). Label jitter moves the own targets only, not the negatives."""
+    src_feats, trg_feats = compute_features(model, items, cfg, store)
+    size, (h, w) = cfg["image_size"], trg_feats.shape[-2:]
+    hard = cfg.get("hard_neg_weight", 1.0) > 1
+    stats, n_negatives = [], []
+    for b, item in enumerate(items):
+        trg = [to_resized(xys, item["trg_img"].size, size) for xys in item["trg_xys"]]
+        own = [jitter_labels(t, size, w, cfg["label_jitter"]) for t in trg] if train else trg
+        src = to_resized(item["src_xys"], item["src_img"].size, size)
+        stats.append(pair_matching_loss(src_feats[b], trg_feats[b], src, own, cfg, temperature, neg_xys_resized=trg))
+        if hard:
+            n_negatives.append(hard_negative_cells(trg, h, w, cfg, trg_feats.device, pos_xys_resized=own).sum(-1))
+    return tuple(torch.cat(values) for values in zip(*stats)), torch.cat(n_negatives) if hard else None
+
+
 # ---------------------------------------------------------------------------
 # Resume helpers
 # ---------------------------------------------------------------------------
@@ -194,8 +245,25 @@ def choose_micro_batch(model, cfg, groups):
             for p in g["params"]:
                 p.grad = None
 
-    return find_micro_batch(run_step, cfg["effective_batch"] if not cfg["effective_batch_schedule"]
-                            else max(cfg["effective_batch_schedule"].values()), model.device)
+    if cfg.get("pair_batch"):  # one pair = two images, like one fake sample
+        max_batch = cfg.get("pair_effective_batch", 4)
+    else:
+        max_batch = (cfg["effective_batch"] if not cfg["effective_batch_schedule"]
+                     else max(cfg["effective_batch_schedule"].values()))
+    return find_micro_batch(run_step, max_batch, model.device)
+
+
+@contextmanager
+def averaged_weights(ema):
+    """Inside the block the model holds the EMA weights; no-op when ema is None."""
+    if ema is None:
+        yield
+        return
+    ema.swap_in()
+    try:
+        yield
+    finally:
+        ema.swap_out()
 
 
 # ---------------------------------------------------------------------------
@@ -205,6 +273,10 @@ def train(cfg, model, run_id, run_dir, resume=False):
     """Train and return the best validation PCK (in percent)."""
     from src.diagnostics import log_evaluation, plot_worst_predictions
 
+    pair_mode = bool(cfg.get("pair_batch"))
+    if cfg.get("hard_neg_weight", 1.0) > 1 and not pair_mode:
+        raise ValueError("hard_neg_weight > 1 needs pair_batch=True: the negatives come from the other "
+                         "queries of the same pair.")
     groups = configure_trainable(model, cfg)
     n_trainable = sum(p.numel() for g in groups for p in g["params"])
     print(f"train_mode={cfg['train_mode']} head={cfg['head']}: {n_trainable / 1e6:.2f}M trainable parameters")
@@ -218,18 +290,26 @@ def train(cfg, model, run_id, run_dir, resume=False):
 
     optimizer = torch.optim.AdamW(groups, weight_decay=cfg["weight_decay"])
     if cfg["train_on_val"]:
-        dataset = QueryDataset(pd.concat([read_queries(cfg, "train"), read_queries(cfg, "val")]), cfg)
+        dataset = (PairDataset if pair_mode else QueryDataset)(
+            pd.concat([read_queries(cfg, "train"), read_queries(cfg, "val")]), cfg)
         print("train_on_val: training on the validation pairs too; no validation, best.pt = last epoch.")
+    elif pair_mode:
+        dataset = PairDataset(read_queries(cfg, "train"), cfg)
     else:
         dataset = build_dataset(cfg, "train")
+    n_queries = len(dataset.df)
     validate = cfg["val_every_epoch"] and not cfg["train_on_val"]
     if len(dataset) == 0:
         raise ValueError("The training split is empty.")
     micro = min(micro, len(dataset))
     n_batches = len(dataset) // micro
     plan, total_updates = plan_updates(n_batches, micro, cfg)
-    print(f"{len(dataset)} training queries, micro-batch {micro}, effective batch "
-          f"{[micro * a for a, _ in plan]} per epoch, {total_updates} updates in {cfg['epochs']} epochs")
+    unit = "pairs" if pair_mode else "queries"
+    if pair_mode:
+        print(f"pair_batch: {len(dataset)} training pairs with {n_queries} queries "
+              f"({n_queries / len(dataset):.1f} per pair), hard_neg_weight {cfg.get('hard_neg_weight', 1.0)}")
+    print(f"{len(dataset)} training {unit}, micro-batch {micro}, effective batch "
+          f"{[micro * a for a, _ in plan]} {unit} per epoch, {total_updates} updates in {cfg['epochs']} epochs")
     warmup_updates = max(1, updates_in_epochs(plan, cfg["warmup_epochs"]))
     temperature_updates = updates_in_epochs(plan, cfg["loss_temperature_epochs"])
     print(f"lr warmup over {warmup_updates} updates, loss temperature ramp over {temperature_updates}")
@@ -266,12 +346,19 @@ def train(cfg, model, run_id, run_dir, resume=False):
         init = load_checkpoint(download_artifact(cfg["init_artifact"], cfg["output_dir"]))
         load_model_weights(model, init["model"])
         print(f"Initialised from {cfg['init_artifact']}")
+    ema_weights = None
+    if cfg.get("ema_decay", 0) > 0:  # after every weight load, so the average starts from those weights
+        from src.utils.ema import EMA
+
+        ema_weights = EMA(model, cfg["ema_decay"])
+        if ckpt is not None and "ema" in ckpt:
+            ema_weights.load_state_dict(ckpt["ema"])
 
     wandb_run = init_wandb(cfg, run_id, run_dir, job_type="train")
     if wandb_run:
         wandb_run.summary.update({"micro_batch": micro, "total_updates": total_updates,
                                   "trainable_params_M": n_trainable / 1e6, "probe_peak_gb": probe_peak,
-                                  "n_train_queries": len(dataset)})
+                                  "n_train_queries": n_queries})
 
     def save_last(epoch, batches_done, complete):
         save_checkpoint({
@@ -280,6 +367,7 @@ def train(cfg, model, run_id, run_dir, resume=False):
             "epoch": epoch, "batches_done": batches_done, "epoch_complete": complete, "micro_batch": micro,
             "global_step": global_step, "best_score": best, "history": history, "stale_epochs": stale,
             "rng": _rng_state(), "config": cfg, "git_commit": git_commit(),
+            **({"ema": ema_weights.state_dict()} if ema_weights else {}),
         }, run_dir, "last.pt")
 
     key = f"pck@{cfg['pck_alpha']}"
@@ -294,19 +382,33 @@ def train(cfg, model, run_id, run_dir, resume=False):
         model.train()
         optimizer.zero_grad(set_to_none=True)
         step_stats = defaultdict(list)  # per-sample values of the current update
+        update_queries = 0  # pair_batch: queries whose summed loss is in the gradients
         t_epoch = time.time()
         progress = tqdm(loader, desc=f"epoch {epoch}", total=n_batches)
         for i, samples in enumerate(progress):
             if i < skip_batches:
                 continue
-            groups_of = [target_group(s["trg_xys"]) for s in samples]  # before augmentation drops targets
-            if augment:
-                samples = [augment_sample(s, cfg) for s in samples]
             temperature = loss_temperature_at(global_step, temperature_updates, cfg)
-            stats = batch_loss(model, samples, cfg, store, temperature=temperature)
+            if pair_mode:
+                group_of = {q: target_group(xys) for s in samples for q, xys in zip(s["query_ids"], s["trg_xys"])}
+                if augment:
+                    samples = [augment_pair(s, cfg) for s in samples]
+                groups_of = [group_of[q] for s in samples for q in s["query_ids"]]
+                stats, n_negatives = pair_batch_loss(model, samples, cfg, store, temperature=temperature)
+            else:
+                groups_of = [target_group(s["trg_xys"]) for s in samples]  # before augmentation drops targets
+                if augment:
+                    samples = [augment_sample(s, cfg) for s in samples]
+                stats = batch_loss(model, samples, cfg, store, temperature=temperature)
             loss = stats[0].mean()
             if torch.isfinite(loss):
-                (loss / accum).backward()
+                if pair_mode:  # the sum now, divided by the update's query count before the step
+                    stats[0].sum().backward()
+                    update_queries += len(stats[0])
+                    if n_negatives is not None:
+                        step_stats["hard_neg_cells"] += n_negatives.tolist()
+                else:
+                    (loss / accum).backward()
                 logged = dict(zip(LOSS_STATS, stats))
                 for name in LOGGED_STATS:
                     step_stats[name] += logged[name].tolist()
@@ -318,9 +420,16 @@ def train(cfg, model, run_id, run_dir, resume=False):
                 continue
 
             # One optimiser update.
+            if pair_mode and update_queries:
+                for g in groups:
+                    for p in g["params"]:
+                        if p.grad is not None:
+                            p.grad.div_(update_queries)
             grad_norm = float(torch.nn.utils.clip_grad_norm_([p for g in groups for p in g["params"]],
                                                              cfg["grad_clip"]))
             optimizer.step()
+            if ema_weights:
+                ema_weights.update()
             optimizer.zero_grad(set_to_none=True)
             lrs = {f"lr/{g['name']}": g["lr"] for g in optimizer.param_groups}  # lr of this update
             scheduler.step()
@@ -335,38 +444,41 @@ def train(cfg, model, run_id, run_dir, resume=False):
                                **lrs,
                                **({"train/loss_temperature": temperature} if cfg["loss_temperature_start"] else {}),
                                "batch/effective": micro * accum,
+                               **({"batch/queries": update_queries} if pair_mode else {}),
                                "optim/grad_norm": grad_norm,
                                "optim/grad_clipped": float(grad_norm > cfg["grad_clip"])}, step=global_step)
             progress.set_postfix(loss_over_chance=f"{means.get('loss_over_chance', float('nan')):.3f}")
-            step_stats = defaultdict(list)
+            step_stats, update_queries = defaultdict(list), 0
             if cfg["checkpoint_every_steps"] and global_step % cfg["checkpoint_every_steps"] == 0:
                 save_last(epoch, i + 1, complete=False)
         skip_batches = 0
 
         record = {"epoch": epoch, "global_step": global_step, "epoch_seconds": round(time.time() - t_epoch, 1)}
-        if validate:
-            summary, meter = evaluate(cfg, model, run_dir, save=False, verbose=False)
-            gain_text = ""
-            if history and key in history[-1]:
-                # Gain over the previous epoch, in units of the 95% interval: inside (-1, 1) = within noise.
-                gain = summary[key] - history[-1][key]
-                summary[f"{key}_gain"] = gain
-                summary[f"{key}_gain_over_ci95"] = gain / max(summary[f"{key}_ci95"], 1e-9)
-                gain_text = f" (gain {gain:+.2f} = {summary[f'{key}_gain_over_ci95']:+.2f} x ci95)"
-            record.update(summary)
-            print(f"epoch {epoch}: val {key} = {summary[key]:.2f} ± {summary[f'{key}_ci95']:.1f}{gain_text}, "
-                  f"val loss_over_chance {summary['loss_over_chance']:.3f}, entropy_norm {summary['entropy_norm']:.3f}")
-            if summary[key] > best:
-                best, stale = summary[key], 0
-                save_checkpoint({"model": trainable_state(model), "epoch": epoch, "score": best,
-                                 "config": cfg, "git_commit": git_commit()}, run_dir, "best.pt")
-            else:
-                stale += 1
-            record["best_pck"] = best
-            if wandb_run:
-                figure = plot_worst_predictions(cfg, model, val_set, meter.frame())
-                log_evaluation(wandb_run, summary, meter, step=global_step, figure=figure)
-                wandb_run.summary["best_pck"] = best
+        with averaged_weights(ema_weights if validate else None):  # validation and best.pt: EMA weights
+            if validate:
+                summary, meter = evaluate(cfg, model, run_dir, save=False, verbose=False)
+                gain_text = ""
+                if history and key in history[-1]:
+                    # Gain over the previous epoch, in units of the 95% interval: inside (-1, 1) = within noise.
+                    gain = summary[key] - history[-1][key]
+                    summary[f"{key}_gain"] = gain
+                    summary[f"{key}_gain_over_ci95"] = gain / max(summary[f"{key}_ci95"], 1e-9)
+                    gain_text = f" (gain {gain:+.2f} = {summary[f'{key}_gain_over_ci95']:+.2f} x ci95)"
+                record.update(summary)
+                print(f"epoch {epoch}: val {key} = {summary[key]:.2f} ± {summary[f'{key}_ci95']:.1f}{gain_text}, "
+                      f"val loss_over_chance {summary['loss_over_chance']:.3f}, "
+                      f"entropy_norm {summary['entropy_norm']:.3f}")
+                if summary[key] > best:
+                    best, stale = summary[key], 0
+                    save_checkpoint({"model": trainable_state(model), "epoch": epoch, "score": best,
+                                     "config": cfg, "git_commit": git_commit()}, run_dir, "best.pt")
+                else:
+                    stale += 1
+                record["best_pck"] = best
+                if wandb_run:
+                    figure = plot_worst_predictions(cfg, model, val_set, meter.frame())
+                    log_evaluation(wandb_run, summary, meter, step=global_step, figure=figure)
+                    wandb_run.summary["best_pck"] = best
         history.append(record)
         (run_dir / "history.json").write_text(json.dumps(history, indent=2) + "\n")
         save_last(epoch, n_batches, complete=True)
@@ -375,8 +487,9 @@ def train(cfg, model, run_id, run_dir, resume=False):
             break
 
     if not validate:  # keep the final weights as "best"
-        save_checkpoint({"model": trainable_state(model), "epoch": cfg["epochs"] - 1, "score": None,
-                         "config": cfg, "git_commit": git_commit()}, run_dir, "best.pt")
+        with averaged_weights(ema_weights):
+            save_checkpoint({"model": trainable_state(model), "epoch": cfg["epochs"] - 1, "score": None,
+                             "config": cfg, "git_commit": git_commit()}, run_dir, "best.pt")
     # Training is over, so last.pt (weights + optimiser state, ~3x best.pt) is no longer needed on Drive.
     checkpoint_path(run_dir, "last.pt").unlink(missing_ok=True)
     if wandb_run:

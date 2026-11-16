@@ -7,7 +7,9 @@ Edge rule: after a geometric transform every kept point must be at least `aug_ed
 (in resized space) away from the border and from the padding a rotation adds. A failing source
 point, or a target image that loses all accepted targets, rejects the geometric transform of that
 image (tried `aug_max_tries` times, then the image keeps its original geometry). Targets that fail
-are dropped. Randomness comes from the `random` module, whose state last.pt saves for --resume.
+are dropped. augment_pair does the same for a whole pair (src/pair_batch.py): a query survives if
+its source point and one of its targets are kept, and the transform of an image is rejected when no
+query would survive. Randomness comes from the `random` module, whose state last.pt saves for --resume.
 """
 
 import math
@@ -16,7 +18,7 @@ import random
 import numpy as np
 from PIL import Image, ImageEnhance, ImageFilter, ImageOps
 
-from data.transforms import flip_sample
+from data.transforms import flip_points, flip_sample
 
 
 def _margins(wh, cfg):
@@ -102,6 +104,66 @@ def augment_sample(sample, cfg):
     sample["src_image"] = f"{sample['src_image']}#aug"  # never reuse cached features of an augmented image
     sample["trg_image"] = f"{sample['trg_image']}#aug"
     return sample
+
+
+def _flip_pair(item):
+    """flip_sample for a pair item: both images and every point."""
+    item = dict(item)
+    src_w, trg_w = item["src_img"].size[0], item["trg_img"].size[0]
+    item["src_img"] = item["src_img"].transpose(Image.FLIP_LEFT_RIGHT)
+    item["trg_img"] = item["trg_img"].transpose(Image.FLIP_LEFT_RIGHT)
+    item["src_xys"] = flip_points(item["src_xys"], src_w)
+    item["trg_xys"] = [flip_points(xys, trg_w) for xys in item["trg_xys"]]
+    item["src_image"] = f"{item['src_image']}#flip"
+    item["trg_image"] = f"{item['trg_image']}#flip"
+    return item
+
+
+def _geometric_pair(img, xy, owner, alive, cfg):
+    """Geometric transform of one image of a pair with the edge rule and aug_max_tries.
+    xy [M, 2] points, owner [M] query index of each point, alive [K] queries still in the item.
+    A query survives when at least one of its points is kept; a transform that leaves no alive query
+    is rejected. Returns (img, xy, keep [M], alive [K]); on rejection the original geometry, all kept."""
+    for _ in range(cfg["aug_max_tries"]):
+        new_img, new_xy, keep = _geometric(img, xy, cfg)
+        survives = alive & np.bincount(owner[keep], minlength=len(alive)).astype(bool)
+        if survives.any():
+            return new_img, new_xy, keep, survives
+    return img, xy, np.ones(len(xy), dtype=bool), alive
+
+
+def augment_pair(item, cfg):
+    """augment_sample for a pair item (src/pair_batch.py): pair flip first, then each image separately.
+
+    A query survives if its source point and at least one of its accepted targets are kept; the
+    others are removed from the returned item (query_ids, src_xys, trg_xys and scale stay aligned).
+    """
+    if cfg["flip_augment"] and random.random() < cfg["flip_augment_prob"]:
+        item = _flip_pair(item)
+    item = dict(item)
+    n_queries = len(item["query_ids"])
+    alive = np.ones(n_queries, dtype=bool)
+
+    src_img, src_xys, _, alive = _geometric_pair(item["src_img"], np.asarray(item["src_xys"], np.float64),
+                                                        np.arange(n_queries), alive, cfg)
+    item["src_img"] = _photometric(src_img, cfg)
+
+    counts = [len(xys) for xys in item["trg_xys"]]
+    owner = np.repeat(np.arange(n_queries), counts)
+    trg_img, trg_xys, trg_keep, alive = _geometric_pair(
+        item["trg_img"], np.concatenate([np.asarray(xys, np.float64) for xys in item["trg_xys"]]), owner, alive, cfg)
+    item["trg_img"] = _photometric(trg_img, cfg)
+
+    trg_split = np.split(trg_xys.astype(np.float32), np.cumsum(counts)[:-1])
+    keep_split = np.split(trg_keep, np.cumsum(counts)[:-1])
+    kept = np.flatnonzero(alive)
+    item["query_ids"] = [item["query_ids"][k] for k in kept]
+    item["src_xys"] = src_xys[kept].astype(np.float32)
+    item["trg_xys"] = [trg_split[k][keep_split[k]] for k in kept]
+    item["scale"] = [item["scale"][k] for k in kept]
+    item["src_image"] = f"{item['src_image']}#aug"  # never reuse cached features of an augmented image
+    item["trg_image"] = f"{item['trg_image']}#aug"
+    return item
 
 
 def augmentation_enabled(cfg):

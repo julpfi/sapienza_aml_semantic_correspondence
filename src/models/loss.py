@@ -13,6 +13,8 @@ For a source point, its feature is compared with every target cell; a softmax ov
     How p is shared among the positives is free, so the model can put almost all of it on one
     cell of one target: lowest loss 0, low entropy, and it commits to a single target, which is
     what PCK rewards (a point between two wheels is wrong for both). label_sigma is not used.
+pair_matching_loss is the same loss for all queries of one image pair (pair_batch training), with
+optional hard negatives: the cells near the other queries' targets (hard_neg_weight).
 """
 
 import math
@@ -74,20 +76,70 @@ def matching_loss(src_feats, trg_feats, src_xy_resized, trg_xys_resized, cfg, te
                           floor = entropy of the soft_ce target, 0 for marginal.
         entropy_norm      H(p) / log(n_cells): 0 = one-hot, 1 = uniform over the cells
     """
-    _, h, w = trg_feats.shape
-    size, log_cells = cfg["image_size"], math.log(h * w)
+    size = cfg["image_size"]
     query = sample_point_features(src_feats, src_xy_resized.to(src_feats.device), size)  # [1, C]
     logits = (query @ trg_feats.flatten(1))[0] / (temperature or cfg["loss_temperature"])
+    return _query_loss(logits, trg_xys_resized, trg_feats.shape[1:], cfg, trg_feats.device)
+
+
+def _query_loss(logits, trg_xys_resized, hw, cfg, device):
+    """LOSS_STATS of one query from its logits [h*w] (temperature and any bias already applied)."""
+    h, w = hw
+    size, log_cells = cfg["image_size"], math.log(h * w)
     log_probs = F.log_softmax(logits, -1)  # [h*w]
     entropy_norm = -(log_probs.exp() * log_probs).sum().detach() / log_cells
     if cfg["loss"] == "soft_ce":
-        target = target_distribution(trg_xys_resized, h, w, size, cfg["label_sigma"], trg_feats.device)
+        target = target_distribution(trg_xys_resized, h, w, size, cfg["label_sigma"], device)
         loss = -(target * log_probs).sum()
         chance, floor = log_cells, float(-torch.xlogy(target, target).sum())
     elif cfg["loss"] == "marginal":
-        mask = positive_cells(trg_xys_resized, h, w, size, cfg["marginal_radius"], trg_feats.device)
+        mask = positive_cells(trg_xys_resized, h, w, size, cfg["marginal_radius"], device)
         loss = -torch.logsumexp(log_probs[mask], 0)
         chance, floor = log_cells - math.log(int(mask.sum())), 0.0
     else:
         raise ValueError(f"loss must be one of {LOSSES}, got {cfg['loss']!r}")
     return loss, (loss.detach() - floor) / (chance - floor), entropy_norm
+
+
+def hard_negative_cells(neg_xys_resized, h, w, cfg, device, pos_xys_resized=None):
+    """Hard negatives of the queries of one pair: bool [K, h*w].
+
+    neg_xys_resized: K tensors [N_k, 2], the accepted targets of each query (resized pixels).
+    Query k's negatives: cells within hard_neg_radius cells of an accepted target of ANY OTHER query,
+    minus cells within hard_neg_exclusion cells of its own accepted targets, minus its marginal
+    positives (positive_cells of pos_xys_resized[k], default neg_xys_resized[k]). One query -> empty.
+    """
+    size = cfg["image_size"]
+    pos_xys_resized = neg_xys_resized if pos_xys_resized is None else pos_xys_resized
+    near = [(_cell_distances(xys, h, w, size, device) <= cfg["hard_neg_radius"]).any(0) for xys in neg_xys_resized]
+    near = torch.stack(near)  # [K, h*w]
+    others = near.sum(0, keepdim=True) - near.long() > 0  # near the targets of at least one other query
+    own = torch.stack([(_cell_distances(xys, h, w, size, device) <= cfg["hard_neg_exclusion"]).any(0)
+                       | positive_cells(pos, h, w, size, cfg["marginal_radius"], device)
+                       for xys, pos in zip(neg_xys_resized, pos_xys_resized)])
+    return others & ~own
+
+
+def pair_matching_loss(src_feats, trg_feats, src_xys_resized, trg_xys_resized, cfg, temperature=None,
+                       neg_xys_resized=None):
+    """matching_loss for all K queries of one image pair, from one similarity [K, h*w].
+
+    src_feats, trg_feats [C, h, w]; src_xys_resized [K, 2]; trg_xys_resized: K tensors [N_k, 2] (the
+    possibly jittered labels); neg_xys_resized: K tensors [N_k, 2], the un-jittered accepted targets that
+    define the hard negatives (default trg_xys_resized).
+    With hard_neg_weight > 1, the logit of every hard_negative_cells cell gets +log(hard_neg_weight)
+    before the softmax: the cell counts weight times in the partition function. loss_over_chance keeps
+    the chance / floor of matching_loss (so it can exceed 1 more easily), and entropy_norm is the
+    entropy of the biased softmax. With weight 1 every query gives exactly matching_loss.
+    Returns the three LOSS_STATS as tensors [K], gradients on the first only.
+    """
+    _, h, w = trg_feats.shape
+    queries = sample_point_features(src_feats, src_xys_resized.to(src_feats.device), cfg["image_size"])  # [K, C]
+    logits = (queries @ trg_feats.flatten(1)) / (temperature or cfg["loss_temperature"])  # [K, h*w]
+    weight = cfg.get("hard_neg_weight", 1.0)
+    if weight > 1:
+        negatives = hard_negative_cells(trg_xys_resized if neg_xys_resized is None else neg_xys_resized,
+                                        h, w, cfg, trg_feats.device, pos_xys_resized=trg_xys_resized)
+        logits = logits + math.log(weight) * negatives
+    stats = [_query_loss(logits[k], trg_xys_resized[k], (h, w), cfg, trg_feats.device) for k in range(len(logits))]
+    return tuple(torch.stack(values) for values in zip(*stats))
