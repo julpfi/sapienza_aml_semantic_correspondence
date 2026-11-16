@@ -221,6 +221,39 @@ sections of [REVIEW_finetuning.md](REVIEW_finetuning.md).
 | `soft_window` / `soft_temperature` | 9 / 0.04 | the sweep in `evaluate` scores other values |
 | `flip_test` | False | |
 
+## 8b. v3 additions (branch sd)
+
+Every new key is in `BASE` and **off by default**: with the defaults the branch reproduces v2. The plan is
+[PLAN.md](PLAN.md); the choices are in [decisions.md](decisions.md). The run order for Colab is in
+[experiments-sd.md](experiments-sd.md).
+
+| Setting | Default | What it does | When to turn it on |
+|---|---|---|---|
+| `pair_batch` | False | one training item = one image pair with all its queries: one backbone pass supervises about 6 queries | with `hard_neg_weight`; also for speed (about 78 updates per epoch at `pair_effective_batch` 4 instead of about 127) |
+| `pair_effective_batch` | 4 | pairs per optimiser update (about 25 queries) | only with `pair_batch` |
+| `hard_neg_weight` | 1.0 (off) | cells near the accepted targets of the other queries of the same pair count that many times in the softmax (`+log(weight)` on their logit) | to cut wrong_keypoint errors (left / right mix-ups); try 2-4; needs `pair_batch` |
+| `hard_neg_radius` / `hard_neg_exclusion` | 1.0 / 2.0 cells | size of the negative zone around another query's target / zone around the query's own targets that is never negative | leave unless the paired wrong_keypoint rate suggests label noise |
+| `train_mode` | `finetune` | `lora`: low-rank updates on the attention query / value of the last `lora_blocks` blocks, everything else frozen | when fine-tuning overfits; update 0 = frozen DINOv2 |
+| `lora_rank` / `lora_alpha` / `lora_dropout` / `lora_blocks` / `lr_lora` | 8 / 16 / 0.05 / 6 / 1e-4 | LoRA size, scale (`lora_alpha / lora_rank`), dropout, last N blocks, peak lr | with `train_mode` `lora` |
+| `ema_decay` | 0.0 (off) | moving average of the trained weights; validation and `best.pt` use the averaged weights | try 0.99 (memory of about 100 updates) for a steadier best epoch |
+| `fusion` | `none` | `concat`: `normalize(cat(dino, sd_concat_weight * sd))`, nothing trained (the frozen gate). `adapter`: `normalize(dino + adapter(sd))`, last adapter layer starts at zero | `concat` in `evaluate` only; `adapter` only if the gate passes |
+| `sd_model_id` / `sd_model_revision` | SD 2.1 community repo / pinned commit | which Stable Diffusion weights are loaded (about 5 GB on the first run, GPU) | with `fusion` other than `none` |
+| `sd_image_size` / `sd_timestep` / `sd_up_block` | 736 / 261 / 1 | SD input side, noising step, decoder block of the feature map (46 cells = the DINOv2 grid at 644) | leave (DIFT recipe) |
+| `sd_concat_weight` | 0.5 | weight of the SD part in `concat` | 0.3 / 1.0 if the gate is close |
+| `adapter_layers` / `adapter_dim` / `lr_adapter` | 2 / 256 / 1e-4 | adapter size and peak lr | with `fusion` `adapter` |
+
+**Checkpoints.** LoRA and adapter weights are saved in `best.pt` like the unfrozen blocks (every parameter with
+`requires_grad`); with `ema_decay` the file holds the averaged weights. `--run <run_id>` rebuilds the model from
+the run's own `config.json` (LoRA, adapter, `fusion`), then loads `best.pt`. Stable Diffusion weights are never
+saved: they are frozen and are downloaded again from the Hub at the pinned `sd_model_revision`. Runs made before
+these keys existed still load, because missing keys take the `BASE` defaults.
+
+**Deciding between runs.** Do not compare two validation scores by eye (the interval of one is about
++-4.5 points). `python scripts/compare_runs.py a_s0,a_s1 b_s0,b_s1` scores the two settings on the same queries
+and bootstraps the validation pairs: difference, 95% interval, P(A better) for PCK@0.05/0.10/0.15, single / multi
+and every error rate. Each run needs `per_query.csv`: run `python run.py --mode evaluate --run <run_id>` after
+training, because training does not write it.
+
 ## 9. Reading the W&B charts
 
 Charts are logged once per optimiser update (train) and once per epoch (val). System charts (GPU, CPU, disk)
