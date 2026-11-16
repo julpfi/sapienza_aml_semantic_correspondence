@@ -114,3 +114,19 @@ Then `docs/RESUME.md` (TASK Phase 4) with the real command outputs, and `docs/ex
 run order: B0 (v2) → marginal → pair batch + hard negatives → LoRA + EMA (paired vs the previous best) → frozen SD
 `concat` gate (pass: about +4 over frozen DINOv2 at the same settings) → adapter fusion. SD is kept only if the
 paired comparison improves PCK@0.05 or the wrong-keypoint rate.
+
+## Status (2026-11-16): all tasks done
+
+| Task | Status | Acceptance check, as run on the final code |
+|---|---|---|
+| T0 lead | done | `python -m compileall -q run.py src data scripts` exit 0; `python run.py --mode submit --dry-run` → "Dry run OK: all needed files are present." |
+| T1 trainer | done | `python scripts/check_pair_batch.py` → 22 PASS, "ALL PASS" (v2 reference pinned to `e5cedb8`) |
+| T2 lora-ema | done | `python scripts/check_lora_ema.py` → 22 PASS, "ALL PASS" |
+| T3 sd-fusion | done | `python scripts/check_sd_fusion.py` → 24 PASS, "0 failure(s)" (tiny SD test pipeline) |
+| T4 tools-docs | done | `python scripts/compare_runs.py --self-test` → 12 PASS, "All checks passed." |
+| Verification | done | `python -m pytest tests -q` → 7 passed; `python -m ruff check .` → All checks passed!; 5 capped CPU smoke trainings |
+| Review | done | independent reviewer: PASS WITH ISSUES; 1 blocker + 4 issues fixed (commit `f9b2324`); the rest is listed in `docs/RESUME.md` |
+
+Additions outside the ownership table, approved or found during verification: `tests/test_v3.py`, `ruff.toml`,
+`src/utils/run.py` (old runs load with the v3 switches off), one unused variable removed in `src/metrics.py`.
+Full report: `docs/RESUME.md`.
