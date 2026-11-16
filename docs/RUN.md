@@ -246,7 +246,7 @@ Every new key is in `BASE` and **off by default**: with the defaults the branch 
 `requires_grad`); with `ema_decay` the file holds the averaged weights. `--run <run_id>` rebuilds the model from
 the run's own `config.json` (LoRA, adapter, `fusion`), then loads `best.pt`. Stable Diffusion weights are never
 saved: they are frozen and are downloaded again from the Hub at the pinned `sd_model_revision`. Runs made before
-these keys existed still load, because missing keys take the `BASE` defaults.
+these keys existed still load, with the v3 switches off (`V3_OFF` in `src/config.py`), whatever `BASE` says at that moment.
 
 **Deciding between runs.** Do not compare two validation scores by eye (the interval of one is about
 +-4.5 points). `python scripts/compare_runs.py a_s0,a_s1 b_s0,b_s1` scores the two settings on the same queries

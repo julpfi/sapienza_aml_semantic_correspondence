@@ -9,7 +9,7 @@ Settings and checkpoints: [RUN.md](RUN.md) section 8b. Every new key is off by d
    as `BRANCH` in `colab/run.ipynb`, then run. Edit only the keys of the run; undo the edit before the next one.
 2. Keep `soft_window`, `soft_temperature`, `flip_test` and `image_size` **fixed** across the whole matrix
    (`compare_runs.py` refuses the comparison otherwise).
-3. **Seeds 0 and 1** for every setting (`seed` in `BASE`); two seeds are the unit of a decision.
+3. **Seeds 0 and 1** for every setting (`seed` in `BASE`); two seeds are the unit of a decision. The seed also sets the SD noise, so with `fusion` on the SD features differ slightly between seeds.
 4. Decide only with `python scripts/compare_runs.py A_RUNS B_RUNS` (seeds comma-separated, for example
    `r1_s0,r1_s1 r0_s0,r0_s1`). One run's 95% interval is about +-4.5 points on 453 queries, too wide for effects
    of 1-3 points. The paired bootstrap over validation pairs is what counts. In the notebook: set `COMPARE`.
@@ -80,7 +80,8 @@ PCK inside the noise.
 Charts are explained in [RUN.md](RUN.md) section 9.
 
 - `train/loss_over_chance` and `_ema`, `train/entropy_norm`: the first epoch should not spike more than in R0.
-- `train/hard_neg_cells`: how many cells the hard negatives cover per update (R3 only, once the trainer logs it).
+- `train/hard_neg_cells`: mean number of hard-negative cells per query (R3 only). Near 0 means the pair's other keypoints
+  all fall inside `hard_neg_exclusion`: lower it before raising `hard_neg_weight`.
   Near 0 means the mask does nothing; very large means the radius is too wide.
 - `optim/grad_norm`, `optim/grad_clipped`, `batch/effective`, `lr/*` (LoRA and adapter groups appear with their own
   learning rates).

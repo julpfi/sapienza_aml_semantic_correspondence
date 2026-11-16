@@ -122,12 +122,14 @@ def _flip_pair(item):
 def _geometric_pair(img, xy, owner, alive, cfg):
     """Geometric transform of one image of a pair with the edge rule and aug_max_tries.
     xy [M, 2] points, owner [M] query index of each point, alive [K] queries still in the item.
-    A query survives when at least one of its points is kept; a transform that leaves no alive query
-    is rejected. Returns (img, xy, keep [M], alive [K]); on rejection the original geometry, all kept."""
+    A query survives when at least one of its points is kept; a transform that loses any alive query is
+    rejected, as in _augment_image (v2 never drops a query: accepting a crop that keeps one query of six
+    would train the keypoints near the image border less). Returns (img, xy, keep [M], alive [K]); on
+    rejection the original geometry, all kept."""
     for _ in range(cfg["aug_max_tries"]):
         new_img, new_xy, keep = _geometric(img, xy, cfg)
         survives = alive & np.bincount(owner[keep], minlength=len(alive)).astype(bool)
-        if survives.any():
+        if (survives == alive).all():
             return new_img, new_xy, keep, survives
     return img, xy, np.ones(len(xy), dtype=bool), alive
 

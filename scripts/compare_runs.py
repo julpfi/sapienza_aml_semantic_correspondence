@@ -6,7 +6,7 @@ Here both sides are scored on the SAME queries and the validation PAIRS are boot
 
     python scripts/compare_runs.py a_s0,a_s1 b_s0,b_s1
     python scripts/compare_runs.py a_s0,a_s1 b_s0,b_s1 --resamples 5000
-    python scripts/compare_runs.py frozen_dino concat_sd --allow fusion
+    python scripts/compare_runs.py frozen_dino concat_sd                # fusion and training keys are not checked
     python scripts/compare_runs.py --self-test
 
 Each argument is a comma-separated list of run ids (the seeds of one setting). Every run needs

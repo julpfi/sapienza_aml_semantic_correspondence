@@ -44,8 +44,8 @@ def make_cfg(**overrides):
 
 
 def head_model_class():
-    """CorrespondenceModel from the HEAD commit, imported from a temp folder."""
-    code = subprocess.run(["git", "show", "HEAD:src/models/__init__.py"], cwd=REPO_ROOT, check=True,
+    """CorrespondenceModel from the v2 (e5cedb8) commit, imported from a temp folder."""
+    code = subprocess.run(["git", "show", "e5cedb8:src/models/__init__.py"], cwd=REPO_ROOT, check=True,
                           capture_output=True, text=True).stdout
     path = Path(tempfile.mkdtemp()) / "head_models.py"
     path.write_text(code)
@@ -60,17 +60,17 @@ def main():
     x = torch.randn(2, 3, 224, 224)
     grid = (16, 16)
 
-    # 6. fusion "none": no diffusers, same keys and features as HEAD.
+    # 6. fusion "none": no diffusers, same keys and features as v2 (e5cedb8).
     cfg_none = make_cfg(fusion="none")
     none_model = build_model(cfg_none)
     check("none: diffusers not imported", "diffusers" not in sys.modules)
     head_model = head_model_class()(cfg_none).eval()
-    check("none: state-dict keys equal the HEAD model's (git show HEAD:src/models/__init__.py)",
+    check("none: state-dict keys equal the v2 (e5cedb8) model's (git show e5cedb8:src/models/__init__.py)",
           list(none_model.state_dict()) == list(head_model.state_dict()))
     with torch.no_grad():
         none_feats = none_model(x)
         diff = (none_feats - head_model(x)).abs().max().item()
-    check("none: features equal the HEAD model's", diff == 0.0, f"(max abs diff {diff:.2e})")
+    check("none: features equal the v2 (e5cedb8) model's", diff == 0.0, f"(max abs diff {diff:.2e})")
     del head_model
 
     # 1. SDFeatures output.

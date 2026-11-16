@@ -7,7 +7,7 @@ import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 
-from src.config import BASE, PATH_ENV_VARS, REPO_ROOT, resolve_paths
+from src.config import BASE, PATH_ENV_VARS, REPO_ROOT, V3_OFF, resolve_paths
 
 
 def git_commit():
@@ -29,12 +29,13 @@ def run_dir_for(cfg, run_id):
 
 
 def load_run_config(run_id, output_dir):
-    """Return a run's saved settings. Keys added to BASE since then use their defaults."""
+    """Return a run's saved settings. Keys added to BASE since then use their defaults; the v3 switches
+    missing from an older run are off (V3_OFF), whatever BASE says now."""
     config_path = Path(output_dir) / run_id / "config.json"
     if not config_path.is_file():
         raise FileNotFoundError(f"Run config not found: {config_path}")
     saved = json.loads(config_path.read_text())
-    cfg = {**BASE, **saved}
+    cfg = {**BASE, **V3_OFF, **saved}
     cfg["runtime"] = BASE["runtime"]
     for key, env_var in PATH_ENV_VARS.items():
         # Priority: SC_* variable, then the saved folder if it exists here, then the runtime default.

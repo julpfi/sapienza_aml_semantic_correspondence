@@ -38,6 +38,8 @@ def apply_lora(backbone, cfg):
     The wrapped layer equals the base layer at init. Idempotent. The new parameters are created with
     requires_grad True; DinoBackbone.freeze() turns them off, so the trainer re-enables lora_parameters.
     """
+    if cfg["lora_blocks"] < 1:  # [-0:] would wrap every block
+        raise ValueError(f"lora_blocks must be >= 1, got {cfg['lora_blocks']}")
     for block in list(backbone.blocks)[-cfg["lora_blocks"]:]:
         attn = block.attention  # transformers 5.x: q_proj / k_proj / v_proj / o_proj directly on the attention
         for name in ("q_proj", "v_proj"):

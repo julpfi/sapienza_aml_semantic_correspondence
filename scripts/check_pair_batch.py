@@ -3,7 +3,7 @@
     python scripts/check_pair_batch.py
 
 Prints PASS/FAIL per check and exits non-zero on a failure. Uses the local training data, no network,
-no model download: the v2-equivalence checks run src/train.py and its HEAD version (git show) on a tiny
+no model download: the v2-equivalence checks run src/train.py and its v2 (e5cedb8) version (git show) on a tiny
 random convolution in place of DINOv2.
 """
 
@@ -45,8 +45,8 @@ def base_cfg(**overrides):
 
 
 def load_head_module(rel_path, name, folder):
-    """Import the HEAD version of a repo file under another module name."""
-    source = subprocess.run(["git", "show", f"HEAD:{rel_path}"], cwd=REPO_ROOT, check=True,
+    """Import the v2 (e5cedb8) version of a repo file under another module name."""
+    source = subprocess.run(["git", "show", f"e5cedb8:{rel_path}"], cwd=REPO_ROOT, check=True,
                             capture_output=True, text=True).stdout
     path = Path(folder) / f"{name}.py"
     path.write_text(source)
@@ -119,7 +119,7 @@ def check_matching_loss_unchanged(head_loss):
             new = matching_loss(src, trg, src_xys, trg_xys[0], cfg)
             old = head_loss.matching_loss(src, trg, src_xys, trg_xys[0], cfg)
             worst = max(worst, max(abs(float(a) - float(b)) for a, b in zip(new, old)))
-        report(f"matching_loss identical to HEAD ({loss})", worst == 0.0, f"max abs diff {worst:.2e}")
+        report(f"matching_loss identical to v2 (e5cedb8) ({loss})", worst == 0.0, f"max abs diff {worst:.2e}")
 
 
 # ---------------------------------------------------------------------------
@@ -164,9 +164,11 @@ def check_hard_negatives():
 
 # ---------------------------------------------------------------------------
 def check_augment_pair():
-    cfg = base_cfg(max_train_queries=40)
+    cfg = base_cfg(max_train_queries=300)
     pairs = PairDataset(read_queries(cfg, "train"), cfg)
-    items = [pairs[j] for j in range(len(pairs))]
+    # The pairs with the most queries: a query lost by a crop only shows on multi-query pairs.
+    largest = sorted(range(len(pairs)), key=lambda j: -len(pairs.rows[j]))[:20]
+    items = [pairs[j] for j in largest]
     random.seed(cfg["seed"])
     aligned, edge_violations, empty, dropped, total = True, 0, 0, 0, 0
     for t in range(200):
@@ -191,8 +193,8 @@ def check_augment_pair():
                 inside = ((point >= m - 1e-6) & (point <= np.asarray(img.size) - m + 1e-6)).all()
                 if not inside and np.abs(unmoved - point).max(axis=1).min() >= 1e-3:
                     edge_violations += 1
-    report("augment_pair: per-query lists aligned, >= 1 query and >= 1 target per query kept",
-           aligned and empty == 0, f"{dropped} of {total} queries dropped in 200 augmentations")
+    report("augment_pair: per-query lists aligned, >= 1 target per query kept, no query dropped (as v2)",
+           aligned and empty == 0 and dropped == 0, f"{dropped} of {total} queries dropped in 200 augmentations")
     report("augment_pair: edge rule (moved points stay aug_edge_margin inside)", edge_violations == 0,
            f"{edge_violations} violations")
 
@@ -265,7 +267,7 @@ def check_v2_equivalence(head_train):
     cfg = base_cfg(max_train_queries=48, image_size=224)
     new_source = (REPO_ROOT / "src" / "train.py").read_text()
     head_call, new_call = loader_call(head_train.SOURCE), loader_call(new_source)
-    report("query-mode DataLoader call: same source as HEAD (ast)", ast.dump(head_call) == ast.dump(new_call),
+    report("query-mode DataLoader call: same source as v2 (e5cedb8) (ast)", ast.dump(head_call) == ast.dump(new_call),
            ast.unparse(new_call))
 
     model = FakeModel()
@@ -273,7 +275,7 @@ def check_v2_equivalence(head_train):
     for name, module in (("head", head_train), ("new", new_train)):
         groups[name] = [(g["name"], g["lr"], sum(p.numel() for p in g["params"]))
                         for g in module.configure_trainable(model, cfg)]
-    report("configure_trainable (finetune): same groups as HEAD", groups["head"] == groups["new"], str(groups["new"]))
+    report("configure_trainable (finetune): same groups as v2 (e5cedb8)", groups["head"] == groups["new"], str(groups["new"]))
     trainable = [p for p in model.parameters() if p.requires_grad]
 
     micro = {name: m.choose_micro_batch(model, cfg, [{"params": trainable}])[0]
@@ -286,7 +288,7 @@ def check_v2_equivalence(head_train):
         temperature_updates = m.updates_in_epochs(plan, cfg["loss_temperature_epochs"])
         schedule[name] = (micro[name], plan, total, m.updates_in_epochs(plan, cfg["warmup_epochs"]),
                           [m.loss_temperature_at(u, temperature_updates, cfg) for u in range(total)])
-    report("micro-batch, update plan, warmup and temperature schedule: same as HEAD",
+    report("micro-batch, update plan, warmup and temperature schedule: same as v2 (e5cedb8)",
            schedule["head"] == schedule["new"], f"micro {micro['new']}, plan {schedule['new'][1]}")
 
     ids, losses = {}, {}
@@ -306,10 +308,10 @@ def check_v2_equivalence(head_train):
                 stats = module.batch_loss(model, samples, cfg, None, temperature=module.loss_temperature_at(
                     i, 10, cfg))
                 losses[name].append(torch.stack(stats).detach())
-    report("first 3 batches of epochs 0 and 1: same query ids as HEAD", ids["head"] == ids["new"],
+    report("first 3 batches of epochs 0 and 1: same query ids as v2 (e5cedb8)", ids["head"] == ids["new"],
            f"epoch 0 batch 0 = {ids['new'][0]}, epoch 1 batch 0 = {ids['new'][3]}")
     worst = max(float((a - b).abs().max()) for a, b in zip(losses["head"], losses["new"]))
-    report("first 3 batches of epochs 0 and 1: same LOSS_STATS as HEAD", worst == 0.0, f"max abs diff {worst:.2e}")
+    report("first 3 batches of epochs 0 and 1: same LOSS_STATS as v2 (e5cedb8)", worst == 0.0, f"max abs diff {worst:.2e}")
 
     try:
         new_train.train(dict(cfg, hard_neg_weight=2.0), model, "check", Path(tempfile.gettempdir()))

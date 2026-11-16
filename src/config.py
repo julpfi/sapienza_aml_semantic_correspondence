@@ -251,6 +251,11 @@ BASE = {
 }
 
 
+# "Off" values of the v3 switches. A run saved before these keys existed gets them, not the current BASE
+# values: BASE may have a switch on for a new experiment while an old run is evaluated or resumed.
+V3_OFF = {"pair_batch": False, "hard_neg_weight": 1.0, "ema_decay": 0.0, "fusion": "none"}
+
+
 def resolve_paths(cfg):
     """Fill in path settings left as None for the detected runtime. Returns cfg."""
     runtime = detect_runtime() if cfg["runtime"] == "auto" else cfg["runtime"]
