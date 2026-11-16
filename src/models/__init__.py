@@ -1,4 +1,4 @@
-"""Correspondence model: DINOv2 backbone + head + matching.
+"""Correspondence model: DINOv2 backbone + head (+ optional Stable Diffusion fusion) + matching.
 
 Every prediction is (x, y) in original target-image pixels.
 """
@@ -18,9 +18,21 @@ class CorrespondenceModel(nn.Module):
         super().__init__()
         self.cfg = cfg
         self.backbone = DinoBackbone(cfg)
+        if cfg.get("train_mode") == "lora":
+            from src.models.lora import apply_lora
+
+            apply_lora(self.backbone, cfg)
         in_dim = self.backbone.model.config.hidden_size
         out_dim = in_dim if cfg["head"] == "none" or cfg.get("head_dim") is None else cfg["head_dim"]
         self.head = ProjectionHead(cfg["head"], in_dim, out_dim)
+        # Imported only here, so fusion "none" never imports diffusers and keeps the v2 state-dict keys.
+        fusion = cfg.get("fusion", "none")
+        if fusion != "none":
+            from src.models.fusion import Fusion
+            from src.models.sd import SDFeatures
+
+            self.sd = SDFeatures(cfg)
+            self.fusion = Fusion(fusion, out_dim, self.sd.out_dim, cfg)
 
     @property
     def device(self):
@@ -28,7 +40,10 @@ class CorrespondenceModel(nn.Module):
 
     def forward(self, x):
         """Normalised images [B, 3, S, S] -> matching features [B, C, h, w]."""
-        return self.head(self.backbone(x))
+        feats = self.head(self.backbone(x))
+        if hasattr(self, "fusion"):
+            feats = self.fusion(feats, self.sd(x, feats.shape[-2:]))
+        return feats
 
     @torch.no_grad()
     def image_features(self, img, flip=False, cache=None, key=None):
