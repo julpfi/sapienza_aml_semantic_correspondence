@@ -96,27 +96,30 @@ Not used: no API key, no `.env` read, no MCP server, plugin or skill, no W&B or 
 Capped CPU smoke trainings (16 queries, 1 epoch, 224 px, tiny SD, W&B off): `v2_default`, `pair_hardneg_marginal`,
 `lora_ema`, `adapter_fusion`, `all_on`. All five finished, wrote `best.pt`, and a rebuilt model reloaded it and
 predicted a finite point. `best.pt` held 24 LoRA tensors in the LoRA runs, 16 adapter tensors in the adapter runs,
-and no SD tensor in any run. They were run three times with the same outcome: before the review fixes, after the
-quality cleanups, and once more on commit `99a3db4` (clean tree), where every acceptance check of T0-T4 was also
-re-run and passed (22 / 22 / 24 / 12 PASS lines, compile exit 0, dry run OK).
+and no SD tensor in any run; `last.pt` was removed at the end of each. They were run three times with the same
+outcome: before the review fixes, after the quality cleanups, and on commit `6ac9463` (clean tree).
 
-Resume with EMA, run for real on `99a3db4` (CPU, LoRA + EMA + pair mode + hard negatives, 2 epochs, a simulated
-disconnect during the validation of epoch 1): `last.pt` held the raw weights (24 tensors) plus the EMA state
-(24 tensors, different from the raw weights); `--resume` printed `Resumed from last.pt: epoch 1, skipping 8
-batches, best 50.00`, finished the run, removed `last.pt`, and the reloaded `best.pt` predicted a finite point.
-The old-run loading snippet was re-run on the same commit with the same result.
+Resume with EMA, run for real on `6ac9463` (CPU, LoRA + EMA 0.9 + pair mode + hard negatives + marginal, 2 epochs,
+`checkpoint_every_steps` 1, a simulated disconnect raised during the validation of epoch 1):
+- `last.pt`: epoch 1, batches_done 8, complete False, 24 raw tensors plus 24 EMA tensors; max |raw - ema| = 2.56e-04,
+  so `last.pt` holds the raw weights and the average separately;
+- after the exception, raised while the EMA weights were swapped in, the model held the raw weights again (diff 0);
+- `--resume` on a freshly built model printed `Resumed from last.pt: epoch 1, skipping 8 batches, best 50.00`,
+  validated epoch 1, removed `last.pt`, and the reloaded `best.pt` (24 tensors) predicted a finite point.
 
-First independent review (at `f9b2324`'s parent): verdict PASS WITH ISSUES. Fixed in `f9b2324`: the blocker (pair augmentation dropped 16% of
+The old-run loading check and the notebook JSON check were re-run on the same commit with the same result.
+
+First independent review (at `b30853a`): verdict PASS WITH ISSUES. Fixed in `f9b2324`: the blocker (pair augmentation dropped 16% of
 the queries) and the four issues (old-run config loading, the equivalence checks compared the code with itself
 once committed, `BRANCH`, a wrong example in `compare_runs.py`), plus three nits (`lora_blocks < 1`, two doc lines).
 
 Second independent review, by a fresh reviewer, of the cleanup commit `fe10491` and of this report: verdict PASS
 WITH ISSUES, no blocker and no code issue. What it could not verify (it was not allowed to train): the smoke
-trainings, EMA resume, the old-run snippet and the notebook JSON; the lead re-ran all four on `99a3db4` (above). It compared the old and new `configure_trainable` on the real model
+trainings, EMA resume, the old-run snippet and the notebook JSON; the lead ran all four on `6ac9463` (above). It compared the old and new `configure_trainable` on the real model
 (identical groups in 4 cases) and the old and new pair loss (bit-identical), confirmed that no config path can
 miss a key now read as `cfg[key]`, and checked every row of the section 7 table against the code. Its three
 findings were wrong statements in the reports (file counts, the commit range in section 9, the fixed / known
-count in PLAN.md); all three are corrected. It did not re-run the smoke trainings (not allowed to train).
+count in PLAN.md); all three are corrected.
 
 ## 7. Not done, known issues, risks
 
@@ -176,8 +179,8 @@ runs with and without it differ in more than one thing; hard negatives can act a
 
 ## 9. How to undo
 
-- Everything is on branch `sd`, on top of `e5cedb8`: commits `5c12d30` to `fe10491`, plus the report-correction
-  commit after it (`git log e5cedb8..sd`).
+- Everything is on branch `sd`, on top of `e5cedb8`: code commits `5c12d30` to `fe10491`, then documentation-only
+  commits (report corrections and verification records); `git log --oneline e5cedb8..sd` lists all of them.
   `v2`, `clip` and `main` are untouched; nothing was pushed (`origin/sd` does not exist).
 - Drop all of it: `git switch v2 && git branch -D sd`.
 - Drop one part: `git revert <commit>`; `1c7a4b8` = SD fusion, `db506ab` = pair batching and training hooks,
