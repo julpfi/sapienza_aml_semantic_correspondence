@@ -25,6 +25,9 @@ On approval, step 1 is copying this plan to `docs/PLAN.md` (plan mode allows onl
 
 ## Design (every feature is a `BASE` key, default off, so `sd` with defaults reproduces v2 exactly)
 
+> Superseded for the defaults by D-008 (2026-11-17, user request): `BASE` now holds the recommended stage-1 setting
+> plus `fusion` "concat"; v2 = `BASE` + `V2_TRAINING`, and the v2-equivalence checks apply `V2_TRAINING`.
+
 | Feature | Key(s) in `BASE` (`src/config.py`) | How |
 |---|---|---|
 | Marginal loss | `loss: "marginal"` (exists) | no code; a run setting |

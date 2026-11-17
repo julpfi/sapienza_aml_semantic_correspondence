@@ -11,8 +11,9 @@ point on the target. The score is PCK@0.10 (see `.claude/CLAUDE.md`).
 
 ```text
 image ──► square resize 644 px ──► DINOv2-B/14 (facebook/dinov2-base) ──► 46×46 patch features
+      ──► (D-008: concatenated with 0.5 × frozen Stable Diffusion 2.1 features, `fusion` "concat")
       ──► cosine similarity of the source point vs every target cell
-      ──► 2× upsampling + 9×9 soft-argmax (T = 0.04) ──► (x, y) in original target pixels
+      ──► 2× upsampling + 11×11 soft-argmax (T = 0.02) ──► (x, y) in original target pixels
 ```
 
 There is one configuration: `BASE` in `src/config.py`. It is set up for fine-tuning on a Colab T4
@@ -187,7 +188,7 @@ Push your code before running it: Colab pulls from GitHub, and edits made in Col
 
 ## 8. Fine-tuning hyperparameters
 
-Current `BASE`. Run 1 is `20261104-155818_train` (val PCK@0.10 62.9); the numbers in the last column are
+Current `BASE` (since D-008; the v2 value is given where it changed, v2 = `BASE` + `V2_TRAINING`). Run 1 is `20261104-155818_train` (val PCK@0.10 62.9); the numbers in the last column are
 sections of [REVIEW_finetuning.md](REVIEW_finetuning.md).
 
 | Setting | Now | Notes |
@@ -199,50 +200,52 @@ sections of [REVIEW_finetuning.md](REVIEW_finetuning.md).
 | `lr_backbone` (peak) / `layer_decay` | **1.5e-5** (was 1e-5; block 11 and final LayerNorm) / 0.75 | block i from the top gets lr_backbone × 0.75^i: block 10 at 1.125e-5 |
 | `weight_decay` | 0.05, on every trained parameter | plain AdamW |
 | **Schedule** | | |
-| `epochs` / `early_stop_patience` | 5 / 3 | |
-| `effective_batch` | **16** (was 8), micro-batch auto | ≈ 127 updates per epoch, ≈ 638 in 5 epochs: less noisy gradients than at 8. Optional ramp: `effective_batch_schedule` |
-| `warmup_epochs` | **1.0** (replaces `warmup_pct` 0.10) | OneCycleLR warmup in epochs: lr rises from peak / 25 to the peak over the whole of epoch 0 (≈ 128 updates), then cosine to peak / 25e4. Independent of `epochs`. The peak lr is the last warmup update. Slower warmup against the entropy rise of the first epoch (1.8) |
-| `grad_clip` | **7.0** (was 5.0) | max total gradient norm. The norm scales with 1 / T: ≈ 11 at T = 0.03 (run 1), so expect ≈ 7 at 0.05. At 5 the clip is a spike guard that still lets the gradient size vary; at 1 every update was clipped (1.9) |
+| `epochs` / `early_stop_patience` | **8** (v2: 5) / 3 | pair mode: ≈ 78 updates per epoch, so 8 epochs ≈ the v2 total |
+| `effective_batch` / `pair_effective_batch` | **16** (was 8) per-query mode / **4 pairs** (≈ 25 queries) in pair mode, micro-batch auto | ≈ 127 updates per epoch, ≈ 638 in 5 epochs: less noisy gradients than at 8. Optional ramp: `effective_batch_schedule` |
+| `warmup_epochs` | **1.5** (v2: 1.0; replaces `warmup_pct` 0.10) | OneCycleLR warmup in epochs: lr rises from peak / 25 to the peak over the whole of epoch 0 (≈ 128 updates), then cosine to peak / 25e4. Independent of `epochs`. The peak lr is the last warmup update. Slower warmup against the entropy rise of the first epoch (1.8) |
+| `grad_clip` | **10.0** (was 5.0, then 7.0) | max total gradient norm. The norm scales with 1 / T: ≈ 11 at T = 0.03 (run 1), so expect ≈ 7 at 0.05. At 5 the clip is a spike guard that still lets the gradient size vary; at 1 every update was clipped (1.9) |
 | precision | fp32 (no AMP) | as in the Lang pipeline; slower and more memory than fp16, so the auto micro-batch is smaller |
 | **Loss** | | |
-| `loss` | `soft_ce` | `soft_ce`: cross-entropy with Gaussian bumps on all accepted targets (entropy floor ≈ 3.3–3.5). `marginal` (Lang): −log of the probability on the cells within `marginal_radius` (1 cell) of any target; lets the model commit to one target with a sharp peak. raw losses are on different scales, so only `loss_over_chance` is charted |
+| `loss` | **`marginal`** (v2: `soft_ce`) | `soft_ce`: cross-entropy with Gaussian bumps on all accepted targets (entropy floor ≈ 3.3–3.5). `marginal` (Lang): −log of the probability on the cells within `marginal_radius` (1 cell) of any target; lets the model commit to one target with a sharp peak. raw losses are on different scales, so only `loss_over_chance` is charted |
 | `loss_temperature` | **0.04** (was 0.05) | both losses; higher = flatter softmax and gradients 2.5× smaller than at 0.02, for a calmer first epoch. Loss and entropy charts are not comparable across temperatures |
-| `loss_temperature_start` | **0.07** (on) | the loss temperature starts there and falls linearly to `loss_temperature` over `loss_temperature_epochs` = **1.0**, the whole first epoch (`train/loss_temperature`). Validation always uses `loss_temperature` |
+| `loss_temperature_start` | **0.07** (on) | the loss temperature starts there and falls linearly to `loss_temperature` over `loss_temperature_epochs` = **3.0** (v2: 2.0) (`train/loss_temperature`). Validation always uses `loss_temperature` |
 | `train_on_val` | False | final submission only: train on the validation pairs too (2,495 queries instead of 2,042). No validation, no early stop, `best.pt` = last epoch: set `epochs` from a validated run first |
 | `label_sigma` | 1.0 cell | `soft_ce` only |
-| `label_jitter` | 0.5 cell | noise on the target labels |
+| `label_jitter` | **0.25** cell (v2: 0.5) | noise on the target labels; small objects got worse in run 1 |
 | **Augmentation** (every training image) | | |
 | `flip_augment_prob` | 0.5 (both images) | keeps left/right consistent |
-| `aug_crop_scale` / prob | [0.7, 1.0] / 0.5 | |
-| `aug_rotation_deg` / prob | 15° / 0.5 | |
-| `aug_color_jitter` / `aug_hue_jitter` / prob | 0.3 / 0.05 / 0.8 | |
-| `aug_grayscale_prob` / `aug_blur_prob` | 0.1 / 0.1 | |
+| `aug_crop_scale` / prob | **[0.8, 1.0]** (v2: [0.7, 1.0]) / 0.5 | |
+| `aug_rotation_deg` / prob | **10°** (v2: 15°) / 0.5 | |
+| `aug_color_jitter` / `aug_hue_jitter` / prob | **0.2 / 0.02 / 0.5** (v2: 0.3 / 0.05 / 0.8) | |
+| `aug_grayscale_prob` / `aug_blur_prob` | **0.05 / 0.05** (v2: 0.1 / 0.1) | |
 | **Inference** (validation each epoch and submission) | | |
-| `soft_window` / `soft_temperature` | 9 / 0.04 | the sweep in `evaluate` scores other values |
+| `soft_window` / `soft_temperature` | **11 / 0.02** (v2: 9 / 0.04; +3.1 points on run 1's model) | the sweep in `evaluate` scores other values; re-run it after the first marginal run |
 | `flip_test` | False | |
 
 ## 8b. v3 additions (branch sd)
 
 Every new key is in `BASE`. **Since D-008 the defaults below are the v2 values, not `BASE`:** `BASE` holds
 the recommended stage-1 setting plus `fusion` "concat" ([decisions.md](decisions.md) D-008); v2 = `BASE` updated with
-`V2_TRAINING` (`src/config.py`). The plan is
+`V2_TRAINING` (`src/config.py`) for training; the matching keys (`soft_window` 11, `soft_temperature` 0.02) stay as
+in `BASE` on purpose, so every run is compared at the same matching settings. The "`BASE` now" column gives the
+current value. The plan is
 [PLAN.md](PLAN.md); the choices are in [decisions.md](decisions.md). The run order for Colab is in
 [experiments-sd.md](experiments-sd.md).
 
-| Setting | Default | What it does | When to turn it on |
+| Setting | v2 value | What it does | When to turn it on |
 |---|---|---|---|
-| `pair_batch` | False | one training item = one image pair with all its queries: one backbone pass supervises about 6 queries | with `hard_neg_weight`; also for speed (about 78 updates per epoch at `pair_effective_batch` 4 instead of about 127) |
+| `pair_batch` | False (`BASE` now: True) | one training item = one image pair with all its queries: one backbone pass supervises about 6 queries | with `hard_neg_weight`; also for speed (about 78 updates per epoch at `pair_effective_batch` 4 instead of about 127) |
 | `pair_effective_batch` | 4 | pairs per optimiser update (about 25 queries) | only with `pair_batch` |
-| `hard_neg_weight` | 1.0 (off) | cells near the accepted targets of the other queries of the same pair count that many times in the softmax (`+log(weight)` on their logit) | to cut wrong_keypoint errors (left / right mix-ups); try 2-4; needs `pair_batch` |
+| `hard_neg_weight` | 1.0 (off; `BASE` now: 3.0) | cells near the accepted targets of the other queries of the same pair count that many times in the softmax (`+log(weight)` on their logit) | to cut wrong_keypoint errors (left / right mix-ups); try 2-4; needs `pair_batch` |
 | `hard_neg_radius` / `hard_neg_exclusion` | 1.0 / 2.0 cells | size of the negative zone around another query's target / zone around the query's own targets that is never negative | leave unless the paired wrong_keypoint rate suggests label noise |
 | `train_mode` | `finetune` | `lora`: low-rank updates on the attention query / value of the last `lora_blocks` blocks, everything else frozen | when fine-tuning overfits; update 0 = frozen DINOv2 |
 | `lora_rank` / `lora_alpha` / `lora_dropout` / `lora_blocks` / `lr_lora` | 8 / 16 / 0.05 / 6 / 1e-4 | LoRA size, scale (`lora_alpha / lora_rank`), dropout, last N blocks, peak lr | with `train_mode` `lora` |
-| `ema_decay` | 0.0 (off) | moving average of the trained weights; validation and `best.pt` use the averaged weights | try 0.99 (memory of about 100 updates) for a steadier best epoch |
-| `fusion` | `none` | `concat`: `normalize(cat(dino, sd_concat_weight * sd))`, nothing trained (the frozen gate). `adapter`: `normalize(dino + adapter(sd))`, last adapter layer starts at zero | `concat` in `evaluate` only; `adapter` only if the gate passes |
+| `ema_decay` | 0.0 (off; `BASE` now: 0.99) | moving average of the trained weights; validation and `best.pt` use the averaged weights | try 0.99 (memory of about 100 updates) for a steadier best epoch |
+| `fusion` | `none` (`BASE` now: `concat`) | `concat`: `normalize(cat(dino, sd_concat_weight * sd))`, no fusion parameters: frozen gate in `evaluate`, or DINOv2 fine-tuned on the concatenated features in `train` (D-008). `adapter`: `normalize(dino + adapter(sd))`, last adapter layer starts at zero | `concat`: the G-SD gate, and the D-008 training run; `adapter`: stage 2, from a trained model, if the gate passes |
 | `sd_model_id` / `sd_model_revision` | SD 2.1 community repo / pinned commit | which Stable Diffusion weights are loaded (about 5 GB on the first run, GPU) | with `fusion` other than `none` |
 | `sd_image_size` / `sd_timestep` / `sd_up_block` | 736 / 261 / 1 | SD input side, noising step, decoder block of the feature map (46 cells = the DINOv2 grid at 644) | leave (DIFT recipe) |
 | `sd_concat_weight` | 0.5 | weight of the SD part in `concat` | 0.3 / 1.0 if the gate is close |
-| `adapter_layers` / `adapter_dim` / `lr_adapter` | 2 / 256 / 1e-4 | adapter size and peak lr | with `fusion` `adapter` |
+| `adapter_layers` / `adapter_dim` / `lr_adapter` | 2 / 256 / 1e-4 (`BASE` now and `BASE` + `V2_TRAINING`: 3e-4) | adapter size and peak lr | with `fusion` `adapter` |
 
 **Checkpoints.** LoRA and adapter weights are saved in `best.pt` like the unfrozen blocks (every parameter with
 `requires_grad`); with `ema_decay` the file holds the averaged weights. `--run <run_id>` rebuilds the model from

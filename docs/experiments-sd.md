@@ -33,9 +33,10 @@ with window 11 / T 0.02. Errors left after run 1: near_miss 16%, wrong_keypoint 
 
 Edits are `key: default -> value` in `BASE`. A run is only started if the previous gate was read.
 
-| Run | Edits to `BASE` (on top of the previous line where stated) | Compare with |
+| Run | Edits to v2 = `BASE` + `V2_TRAINING` (on top of the previous line where stated) | Compare with |
 |---|---|---|
-| **R0** | none: the v2 baseline | reference |
+| **R0** | `BASE` updated with every key of `V2_TRAINING`: the v2 baseline (window 11 / T 0.02) | reference |
+| **D8** | `BASE` as committed (D-008: stage 1 + `fusion` concat, every change at once) | R0 |
 | **R1** | `loss`: `"soft_ce"` -> `"marginal"` | R0 |
 | **R2** | R1 + `pair_batch`: `False` -> `True` | R1 |
 | **R3** | R2 + `hard_neg_weight`: `1.0` -> `3.0` (then `2.0` and `4.0` only if R3 helps) | R2 |
@@ -103,8 +104,10 @@ its 95% interval and P(A better), against the run named in the matrix.
 
 | Run | Seed | Edits | Run id | Val PCK@0.10 | PCK@0.05 | wrong_keypoint % | vs reference |
 |---|---|---|---|---|---|---|---|
-| R0 | 0 | none | | | | | reference |
-| R0 | 1 | none | | | | | reference |
+| D8 | 0 | `BASE` (D-008) | | | | | |
+| D8 | 1 | `BASE` (D-008) | | | | | |
+| R0 | 0 | `V2_TRAINING` | | | | | reference |
+| R0 | 1 | `V2_TRAINING` | | | | | reference |
 | R1 | 0 | `loss` marginal | | | | | |
 | R1 | 1 | `loss` marginal | | | | | |
 | R2 | 0 | R1 + `pair_batch` | | | | | |

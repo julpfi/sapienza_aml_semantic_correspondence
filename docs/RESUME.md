@@ -1,23 +1,22 @@
-# RESUME: v3 additions on branch `sd` (2026-11-16)
+# RESUME: v3 additions on branch `sd` (2026-11-16, updated 2026-11-17 for D-008)
 
-Report of the work planned in [PLAN.md](PLAN.md). Base: `e5cedb8` (= `v2`). Nothing was pushed or merged.
+Report of the work planned in [PLAN.md](PLAN.md). Base: `e5cedb8` (= `v2`). Nothing was merged into `main`.
+`sd` was pushed to `origin/sd` on 2026-11-17 at your explicit request ("commit ... after push it"); `main` is untouched.
 Nothing was trained for real: every training result below is a capped CPU smoke run whose numbers mean nothing.
 
 ## 1. Summary
 
-The branch `sd` now holds five additions to the v2 pipeline, each behind a `BASE` key that is off by default:
+The branch `sd` now holds five additions to the v2 pipeline, each behind a `BASE` key (off in v2 = `BASE` + `V2_TRAINING`):
 pair-batched training, hard negatives taken from the pair's other keypoints, LoRA, EMA of the trained weights,
 and frozen Stable Diffusion features fused with DINOv2 (a no-training `concat` gate and a zero-initialised
-adapter). With the defaults, loader, loss, parameter groups, model keys and features are identical to v2 (checked
-against `e5cedb8`). A paired run-comparison script, a Colab run book, a pytest wrapper and a lint config were added.
+adapter). With every switch off (`V2_TRAINING`), loader, loss, parameter groups, model keys and features are identical
+to v2 (checked against `e5cedb8`). Since D-008 `BASE` itself is the recommended stage-1 setting with `fusion` "concat". A paired run-comparison script, a Colab run book, a pytest wrapper and a lint config were added.
 An independent reviewer found one blocker and four issues; all five are fixed. What is left is listed in section 7.
 The real test of every addition is the Colab run order in [experiments-sd.md](experiments-sd.md).
 
-> **Update 2026-11-17 (D-008, after this report):** at the user's request `BASE` now holds the recommended
-> stage-1 setting plus `fusion` "concat", so the defaults no longer reproduce v2 (v2 = `BASE` + `V2_TRAINING`).
-> Verified on that change: `ruff check .` "All checks passed!", `pytest tests -q` "10 passed in 81.09s", and a
-> capped CPU smoke training of the new `BASE` (tiny SD, 16 queries, 224 px): loss marginal, pair_batch, hard_neg 3.0,
-> EMA 0.99, fusion concat, best.pt 38 tensors, reload + predict finite. Not verified: real SD 2.1, T4 memory.
+> **D-008 (2026-11-17, commit `8012bb5` + this docs commit):** at your request `BASE` holds the recommended stage-1
+> setting plus `fusion` "concat": marginal loss, pair batch, hard negatives 3.0, EMA 0.99, 8 epochs, window 11 / T 0.02,
+> lighter augmentation. The defaults no longer reproduce v2: v2 = `BASE` + `V2_TRAINING`. Verification: section 6.
 
 ## 2. Changes (25 files, +2294 / -61 at `fe10491`, this report included)
 
@@ -30,18 +29,20 @@ The real test of every addition is the Colab run order in [experiments-sd.md](ex
 | T4 tools-docs | `scripts/compare_runs.py` (new), `docs/experiments-sd.md` (new), `docs/RUN.md` (section 8b), `environment.yml` (`diffusers==0.43.0`), `colab/run.ipynb` (compare cell, `BRANCH = "sd"`) |
 | Verification | `tests/test_v3.py` (new), `ruff.toml` (new), `docs/RESUME.md` (new) |
 | Outside the plan's file table | `src/utils/run.py` (old runs load with the v3 switches off), `src/metrics.py` (one unused variable removed) |
+| D-008 (user request, after the plan) | `src/config.py` (`BASE` values, `V2_TRAINING`), `scripts/check_pair_batch.py` (`base_cfg` applies `V2_TRAINING`), `scripts/check_lora_ema.py` (`fusion` none), `docs/decisions.md` (D-008), `docs/RUN.md` (sections 1, 8, 8b), `docs/experiments-sd.md`, `docs/PLAN.md` (note), this report |
 
 ## 3. Team
 
 | Agent | Model | What it did |
 |---|---|---|
-| Lead (this session) | Fable | plan, `BASE` keys, lookups, briefs, integration guard, smoke runs, lint, review fixes, commits, this report |
+| Lead (this session) | Fable, then Opus | plan, `BASE` keys, lookups, briefs, integration guard, smoke runs, lint, review fixes, commits, this report; D-008 change |
 | trainer | Opus | T1 |
 | lora-ema | Sonnet | T2 |
 | sd-fusion | Opus | T3 |
 | tools-docs | Sonnet | T4 |
 | reviewer | Opus, read-only | independent review of the whole diff against PLAN.md; wrote no code |
 | code-reviewer | Sonnet | quality pass in report mode (15 findings), then fix mode for the cleanups you approved |
+| reviewer (fourth) | Opus, read-only | independent review of D-008 (`8012bb5`); wrote no code |
 
 ## 4. Resources used
 
@@ -52,7 +53,8 @@ The real test of every addition is the Colab run order in [experiments-sd.md](ex
 | Tiny SD test pipeline (`hf-internal-testing/tiny-stable-diffusion-torch`, pinned) | yes | CPU checks and smoke runs of the SD code |
 | Subagents | yes | 4 implementers, 1 reviewer, 1 quality pass |
 | `ruff` 0.17.5 | yes (asked during execution) | pip-installed into the local env only; not in `environment.yml` |
-| `git fetch origin` | read-only | to confirm that `origin/sd` does not exist |
+| `git fetch origin` | read-only | to confirm that `origin/sd` did not exist (before your push request) |
+| `git push origin sd` | yes, your explicit request of 2026-11-17 | published `sd` (`8012bb5` and this docs commit); `main` untouched |
 
 Not used: no API key, no `.env` read, no MCP server, plugin or skill, no W&B or Kaggle call, no real SD download.
 
@@ -80,8 +82,28 @@ Not used: no API key, no `.env` read, no MCP server, plugin or skill, no W&B or 
 - **Smoke runs used an in-memory config** instead of editing and restoring `BASE`, so `src/config.py` was never
   put in a temporary state.
 - **`BRANCH` in `colab/run.ipynb` is now `"sd"`** (it was `"v1"`), so the notebook on this branch runs this code.
+- **D-008 (your request):** `BASE` = recommended stage 1 + `fusion` "concat" (DINOv2 fine-tuned on the concatenated
+  features; concat has no parameters). The stage-2 keys (`lr_backbone` 5e-6, 4 epochs, warmup 0.5,
+  `loss_temperature_start` None) were **not** set: they assume `init_artifact` = a trained model.
+  `V2_TRAINING` restores v2 training; `soft_window` 11 / `soft_temperature` 0.02 stay for every run on purpose.
 
 ## 6. Verification (real outputs, final code)
+
+**On `8012bb5` (D-008), clean tree**, commands and output shown in the conversation:
+
+| Command | Result |
+|---|---|
+| T0: `python -m compileall -q -f run.py src data scripts tests`; `python run.py --mode submit --dry-run` | `compileall exit 0`; `Dry run OK: all needed files are present.` |
+| T1: `python scripts/check_pair_batch.py` | 22 PASS, exit 0 (v2 equivalence against `e5cedb8` with `V2_TRAINING`: loss diff 0, same batches; 0 of 670 queries dropped) |
+| T2: `python scripts/check_lora_ema.py` | 22 PASS, exit 0 |
+| T3: `python scripts/check_sd_fusion.py` | 24 PASS, exit 0 |
+| T4: `python scripts/compare_runs.py --self-test` | 12 PASS, exit 0 |
+| `python -m pytest tests -v -p no:cacheprovider` | `10 passed in 82.66s` (8 command checks, every module imports, environment matches the 16 pins) |
+| `python -m ruff check .`; `python -m pip check` | `All checks passed!`; `No broken requirements found.` |
+| Capped CPU smoke training of the new `BASE` (tiny SD, 16 queries, 1 epoch, 224 px) | `loss=marginal pair_batch=True hard_neg=3.0 ema=0.99 mode=finetune fusion=concat`, best.pt 38 tensors, reload + predict finite (278 s) |
+
+The fourth reviewer's report on `8012bb5` is summarised after the third review below. The table that follows is the
+record of the earlier verification, from before D-008.
 
 | Command | Result |
 |---|---|
@@ -135,9 +157,21 @@ not allowed to train). Its findings, all fixed in the next commit: section 9 sai
 (it conflicts, the later commits edited the same files), the pins test could pass on an empty pin list (now it
 requires the 16 pins), and the commit range wording in section 9.
 
+Fourth independent review, by a fresh read-only reviewer, of `8012bb5` (D-008): no blocker, no code issue. It
+checked the 25 `BASE` values against the request, `V2_TRAINING` against `git show e5cedb8:src/config.py`, that the
+v2-equivalence checks still use v2 settings, that no check downloads the real SD weights, that an e5cedb8 config
+loads with its own settings (window 9, soft_ce, fusion none), and that training with `concat` + finetune is a valid
+path (SD frozen, no adapter group, feature dim from the tensor). Its six findings were stale documentation
+(RUN.md sections 1, 8 and 8b, RESUME.md sections 1 and 9, PLAN.md, the experiments-sd.md matrix, the window caveat
+of `V2_TRAINING`); all six are fixed in the docs commit after `8012bb5`.
+
 ## 7. Not done, known issues, risks
 
 Not done (out of this plan): the zoom-in second pass and the similarity-map ensemble; any real training.
+
+D-008 risks: the `BASE` run changes about ten things at once, so its effect cannot be split without the R1-R4
+ablations; `concat` training was never run on the real SD weights or a T4 (SD fp16 next to DINOv2 fp32 with
+pair batches); the stage-2 keys are documented only.
 
 Never run here, first real execution is on Colab:
 - the real SD 2.1 weights: loading the pinned mirror, fp16 on the GPU (NaN risk), the expected 46 x 46 x 1280 map
@@ -184,8 +218,9 @@ runs with and without it differ in more than one thing; hard negatives can act a
 ## 8. Next steps
 
 1. Review the diff: `git diff e5cedb8 sd`. Start with `src/train.py` (`git diff -w`) and `src/models/loss.py`.
-2. Push the branch when you are happy with it: `git push -u origin sd` (not done by me).
-3. On Colab (`BRANCH = "sd"` is already set), follow [experiments-sd.md](experiments-sd.md) in order:
+2. The branch is pushed (your request). On Colab (`BRANCH = "sd"`, `MODE = "train"`) the current `BASE` trains the
+   D-008 setting (stage 1 + `concat`). For a clean decision run R0 (`BASE` + `V2_TRAINING`) on the same seeds.
+3. Then follow [experiments-sd.md](experiments-sd.md) for the ablations:
    R0 baseline → R1 marginal → R2 pair batch → R3 hard negatives → R4 LoRA, EMA → G-SD frozen gate → R5 adapter.
    After each training run, evaluate it (`MODE = "evaluate"`, `RUN = "<run id>"`), then compare with
    `python scripts/compare_runs.py A_RUNS B_RUNS`.
@@ -200,8 +235,8 @@ runs with and without it differ in more than one thing; hard negatives can act a
 - Drop all of it: `git switch v2 && git branch -D sd`.
 - Drop one part: the parts are not independent commits any more. `f9b2324` (review fixes) and `fe10491` (quality
   cleanups) edited files created by `1c7a4b8` (SD fusion), `db506ab` (pair batching, training hooks) and `beb671c`
-  (LoRA / EMA), so `git revert` of one of those alone conflicts. Easier: turn the part off in `BASE` (every addition
-  is off by default), or revert newest first (`git revert --no-commit fe10491 f9b2324 <part>`) and resolve the
+  (LoRA / EMA), so `git revert` of one of those alone conflicts. Easier: turn the part off in `BASE` with its value
+  from `V2_TRAINING` (since D-008 the additions are on in `BASE`), or revert newest first (`git revert --no-commit fe10491 f9b2324 <part>`) and resolve the
   remaining references by hand. The same holds for `2f1552b` (compare script and docs): `f9b2324` and `b30853a`
   edited its files later. Only `environment.yml` (the diffusers pin) was not touched again.
 - Local environment: `pip uninstall diffusers ruff` in the `advance` env. The tiny SD pipeline sits in the
