@@ -1,7 +1,14 @@
 # Experiments on branch `sd`: the Colab run book
 
 You run all training on Colab; agents never train. Plan: [PLAN.md](PLAN.md). Decisions: [decisions.md](decisions.md).
-Settings and checkpoints: [RUN.md](RUN.md) section 8b. Every new key is off by default, so R0 is v2.
+Settings and checkpoints: [RUN.md](RUN.md) section 8b.
+
+**Since D-008 ([decisions.md](decisions.md)):** `BASE` is the recommended stage-1 setting with `fusion` "concat",
+not v2. The edits in the matrix below are written from v2: for R0, update `BASE` with every key of `V2_TRAINING`
+(`src/config.py`); keep `soft_window` 11 / `soft_temperature` 0.02 for all runs. Stage 2 (fine-tune a trained
+model with `fusion` "adapter"): `init_artifact` = that model, `lr_backbone` 5e-6, `epochs` 4, `warmup_epochs` 0.5,
+`loss_temperature_start` None, `lr_adapter` 3e-4 (try 1e-4 / 1e-3); `train_mode` "lora" if the T4 micro-batch
+falls to 1. After the first marginal run, re-run the inference sweep: sharper peaks may prefer a smaller window.
 
 ## Rules
 

@@ -25,7 +25,7 @@ sys.path.insert(0, str(REPO_ROOT))
 
 from data.datasets import QueryDataset, build_dataset, collate_samples, read_queries  # noqa: E402
 from src.augment import _margins, augment_pair, augment_sample  # noqa: E402
-from src.config import get_config  # noqa: E402
+from src.config import V2_TRAINING, get_config  # noqa: E402
 from src.models.loss import hard_negative_cells, matching_loss, pair_matching_loss  # noqa: E402
 from src.pair_batch import PairDataset  # noqa: E402
 
@@ -39,7 +39,9 @@ def report(name, ok, detail=""):
 
 
 def base_cfg(**overrides):
+    """BASE with the v2 training values (V2_TRAINING): the v2-equivalence checks compare against v2 settings."""
     cfg = get_config()
+    cfg.update(V2_TRAINING)
     cfg.update(wandb_mode="disabled", **overrides)
     return cfg
 

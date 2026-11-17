@@ -130,8 +130,8 @@ BASE = {
 
     # --- Matching (Lang) ---
     "matcher": "soft_window",          # "argmax" | "soft_window"
-    "soft_window": 9,                  # window side in (upsampled) cells
-    "soft_temperature": 0.04,
+    "soft_window": 11,                 # window side in (upsampled) cells (v2: 9; 11 / T 0.02 measured better on run 1)
+    "soft_temperature": 0.02,          # v2: 0.04
     "feat_upsample": 2,                # bilinear upsampling of the target feature map
     "flip_test": False,                # try a mirrored source and keep the better global alignment
     "feature_cache_size": 256,         # images kept in memory during inference
@@ -144,12 +144,12 @@ BASE = {
     "batch_size": "auto",              # micro-batch: "auto" = largest that fits the GPU x 0.85, or an int
     "effective_batch": 16,             # batch seen by the optimiser (micro-batch x accumulation steps)
     "effective_batch_schedule": None,  # optional ramp {from_epoch: effective_batch}, e.g. {0: 8, 3: 16}
-    "epochs": 5,                       # ~127 updates per epoch at effective batch 16 on ~2,040 training queries
+    "epochs": 8,                       # v2: 5. Pair mode: ~78 updates per epoch at pair_effective_batch 4 (~127 per-query)
     "early_stop_patience": 3,          # stop after this many epochs without a better val PCK; 0 = never
     # Optimiser: AdamW + OneCycleLR; each lr below is the peak (max_lr) of its parameter group.
     "lr_backbone": 1.5e-5,             # top trained block (11) and the final LayerNorm
     "layer_decay": 0.75,               # block i from the top gets lr_backbone * layer_decay**i (block 10: 1.125e-5)
-    "warmup_epochs": 1.0,              # OneCycleLR warmup length in epochs (1.0 = the whole first epoch); the peak lr is its last update
+    "warmup_epochs": 1.5,              # v2: 1.0. OneCycleLR warmup length in epochs; the peak lr is its last update
     "weight_decay": 0.05,              # AdamW, on every trained parameter
     "grad_clip": 10.0,                 # max total gradient norm
     # Loss (src/models/loss.py explains both):
@@ -158,11 +158,11 @@ BASE = {
     #   "marginal" = Lang: -log of the probability on the cells within marginal_radius of ANY target.
     #                The model may commit to one target with a sharp peak: lower entropy. Ignores label_sigma.
     # val/loss of the two is on different scales: compare runs of different losses by val PCK only.
-    "loss": "soft_ce",                 # "soft_ce" | "marginal"
+    "loss": "marginal",                # "soft_ce" (v2) | "marginal"
     "loss_temperature": 0.04,          # softmax temperature of the loss (both); lower = sharper
     "loss_temperature_start": 0.07,    # anneal linearly from here to loss_temperature over loss_temperature_epochs;
                                        # None = constant loss_temperature
-    "loss_temperature_epochs": 2.0,    # length of the temperature ramp in epochs (2.0 = bottom reached at the end of epoch 1)
+    "loss_temperature_epochs": 3.0,    # v2: 2.0. Length of the temperature ramp in epochs (3.0 = bottom reached at the end of epoch 2)
     "label_sigma": 1.0,                # soft_ce: Gaussian label width in patches (0 = one-hot)
     "marginal_radius": 1.0,            # marginal: positive cells within this many cells of a target (Lang: 1.0)
     "checkpoint_every_steps": 0,       # last.pt every N updates; 0 = end of epoch only (fewer Drive writes)
@@ -172,13 +172,14 @@ BASE = {
     # `epochs` to the best epoch count of a validated run first.
     "train_on_val": False,
 
-    # --- v3 additions (docs/PLAN.md). Every default is "off": BASE as it stands reproduces v2. ---
+    # --- v3 additions (docs/PLAN.md). BASE holds the recommended stage-1 setting (decisions.md D-008): pair batch,
+    # hard negatives, EMA, marginal loss, plus fusion "concat". v2 = BASE updated with V2_TRAINING (below BASE). ---
     # Pair-batched training: one item = one image pair with all its queries, one backbone pass per pair.
-    "pair_batch": False,               # False = one item per query (v2)
+    "pair_batch": True,                # False = one item per query (v2)
     "pair_effective_batch": 4,         # pairs per optimiser update (~6 queries per pair, so ~25 queries)
     # Hard negatives (needs pair_batch): cells near the accepted targets of the OTHER queries of the pair
     # count hard_neg_weight times in the softmax (+log(weight) on their logit). Aims at wrong_keypoint errors.
-    "hard_neg_weight": 1.0,            # 1.0 = off
+    "hard_neg_weight": 3.0,            # 1.0 = off (v2); try 2.0 / 4.0 around it
     "hard_neg_radius": 1.0,            # cells around another query's target that are negatives
     "hard_neg_exclusion": 2.0,         # cells around the query's own accepted targets that are never negatives
     # LoRA (train_mode "lora"): low-rank updates on the attention query/value of the last lora_blocks blocks;
@@ -189,12 +190,12 @@ BASE = {
     "lora_blocks": 6,                  # last N blocks get LoRA
     "lr_lora": 1e-4,                   # peak lr of the LoRA parameters
     # EMA of the trained weights: validation and best.pt use the averaged weights.
-    "ema_decay": 0.0,                  # 0 = off; 0.99 = memory of ~100 updates
+    "ema_decay": 0.99,                 # 0 = off (v2); 0.99 = memory of ~100 updates
     # Stable Diffusion features (frozen, DIFT recipe) fused with the DINOv2 features.
     #   "none"    = DINOv2 only (v2)
     #   "concat"  = normalize(cat(dino, sd_concat_weight * sd)); nothing trained: the frozen gate
     #   "adapter" = normalize(dino + adapter(sd)); the adapter's last layer starts at zero (update 0 = DINOv2)
-    "fusion": "none",
+    "fusion": "concat",                # v2: "none". D-008: concat = DINOv2 fine-tuned on cat(dino, 0.5 * frozen SD)
     "sd_model_id": "sd2-community/stable-diffusion-2-1",  # stabilityai/stable-diffusion-2-1 is no longer public
     "sd_model_revision": "bb2154823665391b4fb29b0b9cf82a198964ee05",  # Hub commit, checked 2026-11-16
     "sd_image_size": 736,              # SD input side; up-block 1 is 1/16 of it: 46 cells = the DINOv2 grid at 644
@@ -203,23 +204,23 @@ BASE = {
     "sd_concat_weight": 0.5,           # weight of the SD part in "concat"
     "adapter_layers": 2,               # bottleneck blocks after the 1x1 input convolution
     "adapter_dim": 256,                # bottleneck width
-    "lr_adapter": 1e-4,                # peak lr of the adapter (the old head at 1e-3 flattened the maps)
+    "lr_adapter": 3e-4,                # peak lr of the adapter (the old head at 1e-3 flattened the maps); used with fusion only
 
     # --- Augmentation (train only; source and target images are augmented separately) ---
     "flip_augment": True,              # Lang ft_pair_flip_aug (both images, keeps left/right consistent)
     "flip_augment_prob": 0.5,
-    "aug_rotation_deg": 15.0,          # max rotation; 0 = off
+    "aug_rotation_deg": 10.0,          # max rotation; 0 = off (v2: 15)
     "aug_rotation_prob": 0.5,
-    "aug_color_jitter": 0.3,           # brightness / contrast / saturation strength; 0 = off
-    "aug_hue_jitter": 0.05,
-    "aug_color_prob": 0.8,
-    "aug_grayscale_prob": 0.1,
-    "aug_crop_scale": [0.7, 1.0],      # random crop side as a fraction of the image side
+    "aug_color_jitter": 0.2,           # brightness / contrast / saturation strength; 0 = off (v2: 0.3)
+    "aug_hue_jitter": 0.02,            # v2: 0.05
+    "aug_color_prob": 0.5,             # v2: 0.8
+    "aug_grayscale_prob": 0.05,        # v2: 0.1
+    "aug_crop_scale": [0.8, 1.0],      # random crop side as a fraction of the image side (v2: [0.7, 1.0])
     "aug_crop_prob": 0.5,
-    "aug_blur_prob": 0.1,
+    "aug_blur_prob": 0.05,             # v2: 0.1
     "aug_edge_margin": 14,             # px in resized space: points closer to the border reject the augmentation
     "aug_max_tries": 3,
-    "label_jitter": 0.5,               # std of the noise on target labels, in patches (GeoAware-SC); 0 = off
+    "label_jitter": 0.25,              # std of the noise on target labels, in patches (GeoAware-SC); 0 = off (v2: 0.5)
 
     # --- Evaluation ---
     "pck_alpha": 0.1,                  # competition metric: PCK@0.10
@@ -254,6 +255,16 @@ BASE = {
 # "Off" values of the v3 switches. A run saved before these keys existed gets them, not the current BASE
 # values: BASE may have a switch on for a new experiment while an old run is evaluated or resumed.
 V3_OFF = {"pair_batch": False, "hard_neg_weight": 1.0, "ema_decay": 0.0, "fusion": "none"}
+
+# v2 values of the training, augmentation and fusion keys that D-008 changed. BASE updated with these = the v2 training
+# (run R0 of docs/experiments-sd.md; also what the v2-equivalence checks use). The matching keys stay as in BASE
+# (soft_window 11, soft_temperature 0.02), so every run of the matrix is compared at the same matching settings.
+V2_TRAINING = {
+    "loss": "soft_ce", "epochs": 5, "warmup_epochs": 1.0, "loss_temperature_epochs": 2.0,
+    "pair_batch": False, "hard_neg_weight": 1.0, "ema_decay": 0.0, "label_jitter": 0.5,
+    "aug_rotation_deg": 15.0, "aug_color_jitter": 0.3, "aug_hue_jitter": 0.05, "aug_color_prob": 0.8,
+    "aug_grayscale_prob": 0.1, "aug_crop_scale": [0.7, 1.0], "aug_blur_prob": 0.1, "fusion": "none",
+}
 
 
 def resolve_paths(cfg):

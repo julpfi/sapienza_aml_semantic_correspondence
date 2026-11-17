@@ -223,7 +223,9 @@ sections of [REVIEW_finetuning.md](REVIEW_finetuning.md).
 
 ## 8b. v3 additions (branch sd)
 
-Every new key is in `BASE` and **off by default**: with the defaults the branch reproduces v2. The plan is
+Every new key is in `BASE`. **Since D-008 the defaults below are the v2 values, not `BASE`:** `BASE` holds
+the recommended stage-1 setting plus `fusion` "concat" ([decisions.md](decisions.md) D-008); v2 = `BASE` updated with
+`V2_TRAINING` (`src/config.py`). The plan is
 [PLAN.md](PLAN.md); the choices are in [decisions.md](decisions.md). The run order for Colab is in
 [experiments-sd.md](experiments-sd.md).
 

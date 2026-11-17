@@ -13,6 +13,12 @@ against `e5cedb8`). A paired run-comparison script, a Colab run book, a pytest w
 An independent reviewer found one blocker and four issues; all five are fixed. What is left is listed in section 7.
 The real test of every addition is the Colab run order in [experiments-sd.md](experiments-sd.md).
 
+> **Update 2026-11-17 (D-008, after this report):** at the user's request `BASE` now holds the recommended
+> stage-1 setting plus `fusion` "concat", so the defaults no longer reproduce v2 (v2 = `BASE` + `V2_TRAINING`).
+> Verified on that change: `ruff check .` "All checks passed!", `pytest tests -q` "10 passed in 81.09s", and a
+> capped CPU smoke training of the new `BASE` (tiny SD, 16 queries, 224 px): loss marginal, pair_batch, hard_neg 3.0,
+> EMA 0.99, fusion concat, best.pt 38 tensors, reload + predict finite. Not verified: real SD 2.1, T4 memory.
+
 ## 2. Changes (25 files, +2294 / -61 at `fe10491`, this report included)
 
 | Task | Files |
