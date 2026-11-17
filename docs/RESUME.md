@@ -121,6 +121,14 @@ miss a key now read as `cfg[key]`, and checked every row of the section 7 table 
 findings were wrong statements in the reports (file counts, the commit range in section 9, the fixed / known
 count in PLAN.md); all three are corrected.
 
+Third independent review, by another fresh reviewer, of the final documentation commit `c519474`: verdict PASS
+WITH ISSUES, no blocker. It confirmed that no file outside `docs/` changed after `fe10491`, re-ran every acceptance
+check, the suite, ruff and `pip check` with the results above, checked every row of the section 7 table against the
+code, and found the smoke-training and EMA-resume records consistent with `src/train.py` (it could not re-run them:
+not allowed to train). Its findings, all fixed in the next commit: section 9 said one part could be reverted alone
+(it conflicts, the later commits edited the same files), the pins test could pass on an empty pin list (now it
+requires the 16 pins), and the commit range wording in section 9.
+
 ## 7. Not done, known issues, risks
 
 Not done (out of this plan): the zoom-in second pass and the similarity-map ensemble; any real training.
@@ -179,12 +187,16 @@ runs with and without it differ in more than one thing; hard negatives can act a
 
 ## 9. How to undo
 
-- Everything is on branch `sd`, on top of `e5cedb8`: code commits `5c12d30` to `fe10491`, then documentation-only
-  commits (report corrections and verification records); `git log --oneline e5cedb8..sd` lists all of them.
+- Everything is on branch `sd`, on top of `e5cedb8`: commits `5c12d30` to `fe10491` hold all the code (with two
+  documentation-only commits among them, `54cb654` and `5a4a74e`); every commit after `fe10491` changes only
+  `docs/` or `tests/`. `git log --oneline e5cedb8..sd` lists all of them.
   `v2`, `clip` and `main` are untouched; nothing was pushed (`origin/sd` does not exist).
 - Drop all of it: `git switch v2 && git branch -D sd`.
-- Drop one part: `git revert <commit>`; `1c7a4b8` = SD fusion, `db506ab` = pair batching and training hooks,
-  `beb671c` = LoRA / EMA modules, `2f1552b` = compare script and docs, `f9b2324` = review fixes,
-  `fe10491` = quality cleanups and the build tests.
+- Drop one part: the parts are not independent commits any more. `f9b2324` (review fixes) and `fe10491` (quality
+  cleanups) edited files created by `1c7a4b8` (SD fusion), `db506ab` (pair batching, training hooks) and `beb671c`
+  (LoRA / EMA), so `git revert` of one of those alone conflicts. Easier: turn the part off in `BASE` (every addition
+  is off by default), or revert newest first (`git revert --no-commit fe10491 f9b2324 <part>`) and resolve the
+  remaining references by hand. The same holds for `2f1552b` (compare script and docs): `f9b2324` and `b30853a`
+  edited its files later. Only `environment.yml` (the diffusers pin) was not touched again.
 - Local environment: `pip uninstall diffusers ruff` in the `advance` env. The tiny SD pipeline sits in the
   Hugging Face cache (`~/.cache/huggingface/hub/models--hf-internal-testing--tiny-stable-diffusion-torch`).

@@ -125,7 +125,7 @@ paired comparison improves PCK@0.05 or the wrong-keypoint rate.
 | T3 sd-fusion | done | `python scripts/check_sd_fusion.py` → 24 PASS, "0 failure(s)" (tiny SD test pipeline) |
 | T4 tools-docs | done | `python scripts/compare_runs.py --self-test` → 12 PASS, "All checks passed." |
 | Verification | done | `python -m pytest tests -q` → 10 passed (the build checks are part of the suite); `python -m ruff check .` → All checks passed!; build (no build system: bytecode compile exit 0, 27 of 27 modules import, `pip check` clean); 5 capped CPU smoke trainings |
-| Review | done | independent reviewer: PASS WITH ISSUES; 1 blocker + 4 issues fixed (commit `f9b2324`); quality pass: 15 findings, 9 fixed, 4 known, 2 partly fixed (`docs/RESUME.md` section 7); second independent review of `fe10491`: no blocker, no code issue, 3 report corrections applied; smoke trainings and an EMA resume test re-run on `6ac9463` |
+| Review | done | independent reviewer: PASS WITH ISSUES; 1 blocker + 4 issues fixed (commit `f9b2324`); quality pass: 15 findings, 9 fixed, 4 known, 2 partly fixed (`docs/RESUME.md` section 7); second independent review of `fe10491`: no blocker, no code issue, 3 report corrections applied; smoke trainings and an EMA resume test re-run on `6ac9463`; third independent review of `c519474`: no blocker, 3 small findings fixed |
 
 Additions outside the ownership table, approved or found during verification: `tests/test_v3.py`, `ruff.toml`,
 `src/utils/run.py` (old runs load with the v3 switches off), one unused variable removed in `src/metrics.py`.

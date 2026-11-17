@@ -55,6 +55,7 @@ def test_every_module_imports():
 def test_environment_matches_pins():
     env = yaml.safe_load((REPO_ROOT / "environment.yml").read_text())
     pins = next(d["pip"] for d in env["dependencies"] if isinstance(d, dict) and "pip" in d)
+    assert len(pins) >= 16, f"expected the 16 pinned pip packages of environment.yml, found {len(pins)}"
     wrong = {}
     for pin in pins:
         name, version = pin.split("==")
