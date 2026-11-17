@@ -13,7 +13,7 @@ against `e5cedb8`). A paired run-comparison script, a Colab run book, a pytest w
 An independent reviewer found one blocker and four issues; all five are fixed. What is left is listed in section 7.
 The real test of every addition is the Colab run order in [experiments-sd.md](experiments-sd.md).
 
-## 2. Changes (24 files, +2077 / -58)
+## 2. Changes (25 files, +2294 / -61 at `fe10491`, this report included)
 
 | Task | Files |
 |---|---|
@@ -22,7 +22,7 @@ The real test of every addition is the Colab run order in [experiments-sd.md](ex
 | T2 lora-ema | `src/models/lora.py` (new), `src/utils/ema.py` (new), `scripts/check_lora_ema.py` (new) |
 | T3 sd-fusion | `src/models/sd.py` (new: `SDFeatures`), `src/models/fusion.py` (new: `Fusion`), `src/models/__init__.py` (wiring), `scripts/check_sd_fusion.py` (new) |
 | T4 tools-docs | `scripts/compare_runs.py` (new), `docs/experiments-sd.md` (new), `docs/RUN.md` (section 8b), `environment.yml` (`diffusers==0.43.0`), `colab/run.ipynb` (compare cell, `BRANCH = "sd"`) |
-| Verification | `tests/test_v3.py` (new), `ruff.toml` (new) |
+| Verification | `tests/test_v3.py` (new), `ruff.toml` (new), `docs/RESUME.md` (new) |
 | Outside the plan's file table | `src/utils/run.py` (old runs load with the v3 switches off), `src/metrics.py` (one unused variable removed) |
 
 ## 3. Team
@@ -79,7 +79,7 @@ Not used: no API key, no `.env` read, no MCP server, plugin or skill, no W&B or 
 
 | Command | Result |
 |---|---|
-| `python -m pytest tests -q` | `10 passed in 146.41s (0:02:26)` (8 command checks, every module imports, environment matches the pins) |
+| `python -m pytest tests -q` | `10 passed` (146 s to 179 s over four runs on the final code) (8 command checks, every module imports, environment matches the pins) |
 | `python -m ruff check .` | `All checks passed!` |
 | Build: the repo has no build system (no `setup.py`, `pyproject.toml`, `setup.cfg` or `Makefile`; it is run from source). The three steps below are what "the build succeeds" can mean here | |
 | Build 1: `python -m compileall -q -f run.py src data scripts tests` | `compileall exit 0` (every file compiles to bytecode) |
@@ -99,9 +99,16 @@ predicted a finite point. `best.pt` held 24 LoRA tensors in the LoRA runs, 16 ad
 and no SD tensor in any run. They were run twice: before the review fixes, and again on the final code after the
 review fixes and the quality cleanups, with the same outcome.
 
-Independent review: verdict PASS WITH ISSUES. Fixed in `f9b2324`: the blocker (pair augmentation dropped 16% of
+First independent review (at `f9b2324`'s parent): verdict PASS WITH ISSUES. Fixed in `f9b2324`: the blocker (pair augmentation dropped 16% of
 the queries) and the four issues (old-run config loading, the equivalence checks compared the code with itself
 once committed, `BRANCH`, a wrong example in `compare_runs.py`), plus three nits (`lora_blocks < 1`, two doc lines).
+
+Second independent review, by a fresh reviewer, of the cleanup commit `fe10491` and of this report: verdict PASS
+WITH ISSUES, no blocker and no code issue. It compared the old and new `configure_trainable` on the real model
+(identical groups in 4 cases) and the old and new pair loss (bit-identical), confirmed that no config path can
+miss a key now read as `cfg[key]`, and checked every row of the section 7 table against the code. Its three
+findings were wrong statements in the reports (file counts, the commit range in section 9, the fixed / known
+count in PLAN.md); all three are corrected. It did not re-run the smoke trainings (not allowed to train).
 
 ## 7. Not done, known issues, risks
 
@@ -123,7 +130,7 @@ Known issues left from the review (not fixed):
 - A `last.pt` without an `"ema"` entry restarts the average from the loaded weights on resume.
 - SD features differ slightly between seeds, because the seed sets the SD noise.
 
-Quality findings of the code-reviewer (15, none a bug). You decided: fix the neutral ones, read the v3 keys as
+Quality findings of the code-reviewer (15, none a bug): 9 fixed, 4 known, 2 partly fixed (rows 11 and 15). You decided: fix the neutral ones, read the v3 keys as
 `cfg[key]`, keep the `src_xys` name. Result (fixes applied by the code-reviewer agent, then re-verified by the
 full suite and the smoke runs):
 
@@ -160,10 +167,12 @@ runs with and without it differ in more than one thing; hard negatives can act a
 
 ## 9. How to undo
 
-- Everything is on branch `sd`, commits `5c12d30` .. the commit that adds this file, on top of `e5cedb8`.
+- Everything is on branch `sd`, on top of `e5cedb8`: commits `5c12d30` to `fe10491`, plus the report-correction
+  commit after it (`git log e5cedb8..sd`).
   `v2`, `clip` and `main` are untouched; nothing was pushed (`origin/sd` does not exist).
 - Drop all of it: `git switch v2 && git branch -D sd`.
 - Drop one part: `git revert <commit>`; `1c7a4b8` = SD fusion, `db506ab` = pair batching and training hooks,
-  `beb671c` = LoRA / EMA modules, `2f1552b` = compare script and docs, `f9b2324` = review fixes.
+  `beb671c` = LoRA / EMA modules, `2f1552b` = compare script and docs, `f9b2324` = review fixes,
+  `fe10491` = quality cleanups and the build tests.
 - Local environment: `pip uninstall diffusers ruff` in the `advance` env. The tiny SD pipeline sits in the
   Hugging Face cache (`~/.cache/huggingface/hub/models--hf-internal-testing--tiny-stable-diffusion-torch`).
