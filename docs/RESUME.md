@@ -96,15 +96,23 @@ Not used: no API key, no `.env` read, no MCP server, plugin or skill, no W&B or 
 Capped CPU smoke trainings (16 queries, 1 epoch, 224 px, tiny SD, W&B off): `v2_default`, `pair_hardneg_marginal`,
 `lora_ema`, `adapter_fusion`, `all_on`. All five finished, wrote `best.pt`, and a rebuilt model reloaded it and
 predicted a finite point. `best.pt` held 24 LoRA tensors in the LoRA runs, 16 adapter tensors in the adapter runs,
-and no SD tensor in any run. They were run twice: before the review fixes, and again on the final code after the
-review fixes and the quality cleanups, with the same outcome.
+and no SD tensor in any run. They were run three times with the same outcome: before the review fixes, after the
+quality cleanups, and once more on commit `99a3db4` (clean tree), where every acceptance check of T0-T4 was also
+re-run and passed (22 / 22 / 24 / 12 PASS lines, compile exit 0, dry run OK).
+
+Resume with EMA, run for real on `99a3db4` (CPU, LoRA + EMA + pair mode + hard negatives, 2 epochs, a simulated
+disconnect during the validation of epoch 1): `last.pt` held the raw weights (24 tensors) plus the EMA state
+(24 tensors, different from the raw weights); `--resume` printed `Resumed from last.pt: epoch 1, skipping 8
+batches, best 50.00`, finished the run, removed `last.pt`, and the reloaded `best.pt` predicted a finite point.
+The old-run loading snippet was re-run on the same commit with the same result.
 
 First independent review (at `f9b2324`'s parent): verdict PASS WITH ISSUES. Fixed in `f9b2324`: the blocker (pair augmentation dropped 16% of
 the queries) and the four issues (old-run config loading, the equivalence checks compared the code with itself
 once committed, `BRANCH`, a wrong example in `compare_runs.py`), plus three nits (`lora_blocks < 1`, two doc lines).
 
 Second independent review, by a fresh reviewer, of the cleanup commit `fe10491` and of this report: verdict PASS
-WITH ISSUES, no blocker and no code issue. It compared the old and new `configure_trainable` on the real model
+WITH ISSUES, no blocker and no code issue. What it could not verify (it was not allowed to train): the smoke
+trainings, EMA resume, the old-run snippet and the notebook JSON; the lead re-ran all four on `99a3db4` (above). It compared the old and new `configure_trainable` on the real model
 (identical groups in 4 cases) and the old and new pair loss (bit-identical), confirmed that no config path can
 miss a key now read as `cfg[key]`, and checked every row of the section 7 table against the code. Its three
 findings were wrong statements in the reports (file counts, the commit range in section 9, the fixed / known
@@ -118,7 +126,8 @@ Never run here, first real execution is on Colab:
 - the real SD 2.1 weights: loading the pinned mirror, fp16 on the GPU (NaN risk), the expected 46 x 46 x 1280 map
   at 736 px (derived from the UNet config and a scaled-down UNet, not from the real one);
 - GPU memory of SD next to DINOv2 fine-tuning, and of the evaluate feature cache with `concat` (2,048 channels);
-- a full `train()` in pair, LoRA, EMA or adapter mode at real size; `--resume` with EMA was reviewed by reading only.
+- a full `train()` in pair, LoRA, EMA or adapter mode at real size (only the capped CPU runs of section 6);
+- the Colab notebook itself (it is valid JSON with `BRANCH = "sd"`, but it was not executed).
 
 Known issues left from the review (not fixed):
 - The micro-batch probe uses one-query samples, so pair-mode loss memory is not probed (small next to the backbone).
