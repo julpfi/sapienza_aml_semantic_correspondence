@@ -242,7 +242,7 @@ current value. The plan is
 | `lora_rank` / `lora_alpha` / `lora_dropout` / `lora_blocks` / `lr_lora` | 8 / 16 / 0.05 / 6 / 1e-4 | LoRA size, scale (`lora_alpha / lora_rank`), dropout, last N blocks, peak lr | with `train_mode` `lora` |
 | `ema_decay` | 0.0 (off; `BASE` now: 0.99) | moving average of the trained weights; validation and `best.pt` use the averaged weights | try 0.99 (memory of about 100 updates) for a steadier best epoch |
 | `fusion` | `none` (`BASE` now: `concat`) | `concat`: `normalize(cat(dino, sd_concat_weight * sd))`, no fusion parameters: frozen gate in `evaluate`, or DINOv2 fine-tuned on the concatenated features in `train` (D-008). `adapter`: `normalize(dino + adapter(sd))`, last adapter layer starts at zero | `concat`: the G-SD gate, and the D-008 training run; `adapter`: stage 2, from a trained model, if the gate passes |
-| `sd_model_id` / `sd_model_revision` | SD 2.1 community repo / pinned commit | which Stable Diffusion weights are loaded (about 5 GB on the first run, GPU) | with `fusion` other than `none` |
+| `sd_model_id` / `sd_model_revision` | SD 2.1 community repo / pinned commit | which Stable Diffusion weights are loaded. `scripts/download_weights.py` (run by `colab_setup.py`) saves the 3.3 GB the code needs to `<weights_dir>/stable-diffusion-2-1` (on Colab: Drive) once, then every session loads from there; without a finished download (marker `.download_complete`) SD comes from the Hub into the temporary cache | with `fusion` other than `none` |
 | `sd_image_size` / `sd_timestep` / `sd_up_block` | 736 / 261 / 1 | SD input side, noising step, decoder block of the feature map (46 cells = the DINOv2 grid at 644) | leave (DIFT recipe) |
 | `sd_concat_weight` | 0.5 | weight of the SD part in `concat` | 0.3 / 1.0 if the gate is close |
 | `adapter_layers` / `adapter_dim` / `lr_adapter` | 2 / 256 / 1e-4 (`BASE` now and `BASE` + `V2_TRAINING`: 3e-4) | adapter size and peak lr | with `fusion` `adapter` |
@@ -250,7 +250,7 @@ current value. The plan is
 **Checkpoints.** LoRA and adapter weights are saved in `best.pt` like the unfrozen blocks (every parameter with
 `requires_grad`); with `ema_decay` the file holds the averaged weights. `--run <run_id>` rebuilds the model from
 the run's own `config.json` (LoRA, adapter, `fusion`), then loads `best.pt`. Stable Diffusion weights are never
-saved: they are frozen and are downloaded again from the Hub at the pinned `sd_model_revision`. Runs made before
+saved in runs: they are frozen and are loaded from the Drive snapshot (or the Hub) at the pinned `sd_model_revision`. Runs made before
 these keys existed still load, with the v3 switches off (`V3_OFF` in `src/config.py`), whatever `BASE` says at that moment.
 
 **Deciding between runs.** Do not compare two validation scores by eye (the interval of one is about

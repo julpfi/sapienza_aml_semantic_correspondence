@@ -64,7 +64,8 @@ Two evaluations with the same matching settings, no fine-tuning:
 1. `fusion` `"none"` (frozen DINOv2): `python run.py --mode evaluate`
 2. `fusion` `"concat"` (frozen DINOv2 + SD): edit `BASE`, push, `python run.py --mode evaluate`
 
-The first `concat` run downloads about 5 GB of SD weights (pinned `sd_model_revision`) and needs the GPU. Then
+With `fusion` on, `colab_setup.py` (cell 3) saves the SD weights (3.3 GB, pinned `sd_model_revision`) to Drive the
+first time; later sessions load them from there. The run needs the GPU. Then
 `python scripts/compare_runs.py <concat_run> <none_run>`. **Pass: concat is about +4 points PCK@0.10 or better.**
 If it is close, try `sd_concat_weight` 0.3 and 1.0 (default 0.5) and compare each against `none`.
 

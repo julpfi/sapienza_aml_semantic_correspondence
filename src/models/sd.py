@@ -22,9 +22,18 @@ class _StopForward(Exception):
     """Raised by the up-block hook: everything after that block is not needed."""
 
 
+SD_COMPLETE_MARKER = ".download_complete"  # written by scripts/download_weights.py after the last file
+
+
 def local_sd_dir(cfg):
     """Folder with a local snapshot of sd_model_id, e.g. weights/stable-diffusion-2-1."""
     return Path(cfg["weights_dir"]) / cfg["sd_model_id"].split("/")[-1]
+
+
+def local_sd_ready(cfg):
+    """True when local_sd_dir holds a finished download of sd_model_revision (not one cut by a disconnect)."""
+    marker = local_sd_dir(cfg) / SD_COMPLETE_MARKER
+    return marker.is_file() and marker.read_text().strip() == cfg["sd_model_revision"]
 
 
 def _load(cls, source, revision, subfolder, dtype):
@@ -47,8 +56,12 @@ class SDFeatures(nn.Module):
         from diffusers import AutoencoderKL, DDPMScheduler, UNet2DConditionModel
         from transformers import CLIPTextModel, CLIPTokenizer
 
-        local_dir = local_sd_dir(cfg)
-        source, revision = (local_dir, None) if local_dir.is_dir() else (cfg["sd_model_id"], cfg["sd_model_revision"])
+        if local_sd_ready(cfg):
+            source, revision = local_sd_dir(cfg), None
+        else:
+            source, revision = cfg["sd_model_id"], cfg["sd_model_revision"]
+            print(f"Stable Diffusion: no finished download in {local_sd_dir(cfg)}; loading {source} from the Hub "
+                  "(Colab: run scripts/download_weights.py once to keep it on Drive)")
         # The dtype is chosen here, from the device build_model will move the model to: loading fp16
         # directly avoids a transient fp32 copy of the UNet on the GPU. _apply() fixes it if the
         # module is moved to another device type later.

@@ -9,8 +9,8 @@ Steps (each one is safe to repeat):
    a CUDA build of torch/torchvision, so those two are skipped.
 3. Load the secrets (Colab Secrets, or a .env file in the repo) into the environment.
 4. Mount Google Drive, so runs, weights and feature caches survive a disconnect.
-5. Download the competition data (scripts/kaggle_io.py) and the DINOv2 weights
-   (scripts/download_weights.py).
+5. Download the competition data (scripts/kaggle_io.py) and the DINOv2 weights, plus the Stable Diffusion
+   weights when fusion != "none" (scripts/download_weights.py; on Drive, so only the first session downloads).
 Paths are then resolved by src/config.py for the "colab" runtime.
 """
 
