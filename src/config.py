@@ -169,7 +169,7 @@ BASE = {
     "val_every_epoch": True,
     # Final submission only: also train on the validation pairs (+22% queries). Validation, best.pt
     # selection and early stop are then off, and best.pt = the weights after the last epoch, so set
-    # `epochs` to the best epoch count of a validated run first.
+        # `epochs` to the best epoch count of a validated run first.
     "train_on_val": False,
 
     # --- v3 additions (docs/PLAN.md). BASE holds the recommended stage-1 setting (decisions.md D-008): pair batch,
