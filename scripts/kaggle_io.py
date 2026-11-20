@@ -28,9 +28,17 @@ OFFICIAL_FILES = ["train.csv", "test.csv", "sample_submission.csv", "make_submis
 
 def kaggle_cli():
     load_secrets()
-    missing = [key for key in ("KAGGLE_USERNAME", "KAGGLE_KEY") if not os.environ.get(key)]
-    if missing:
-        sys.exit(f"Missing {missing}. Put them in .env (local) or Colab Secrets.")
+    # New Kaggle API tokens (KGAT_...) are read from KAGGLE_API_TOKEN, not KAGGLE_KEY: with the token in
+    # KAGGLE_KEY the CLI sends it as a legacy key and the download fails with 401 Unauthorized.
+    key = os.environ.get("KAGGLE_KEY", "").strip()
+    if key.startswith("KGAT_") and not os.environ.get("KAGGLE_API_TOKEN"):
+        os.environ["KAGGLE_API_TOKEN"] = key
+    if os.environ.get("KAGGLE_API_TOKEN"):
+        os.environ.pop("KAGGLE_KEY", None)  # the CLI would otherwise prefer the username / key pair
+    else:
+        missing = [k for k in ("KAGGLE_USERNAME", "KAGGLE_KEY") if not os.environ.get(k)]
+        if missing:
+            sys.exit(f"Missing {missing} (or KAGGLE_API_TOKEN). Put them in .env (local) or Colab Secrets.")
     kaggle = shutil.which("kaggle")
     if kaggle is None:
         sys.exit("Kaggle CLI not found. Install the environment first (environment.yml).")

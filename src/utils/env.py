@@ -7,7 +7,7 @@ import os
 
 from src.config import REPO_ROOT
 
-SECRET_NAMES = ["HF_TOKEN", "KAGGLE_USERNAME", "KAGGLE_KEY", "WANDB_API_KEY"]
+SECRET_NAMES = ["HF_TOKEN", "KAGGLE_USERNAME", "KAGGLE_KEY", "KAGGLE_API_TOKEN", "WANDB_API_KEY"]
 
 
 def load_secrets(names=SECRET_NAMES):

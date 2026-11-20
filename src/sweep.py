@@ -10,6 +10,7 @@ import itertools
 from copy import deepcopy
 
 import pandas as pd
+import torch
 from tqdm.auto import tqdm
 
 from data.datasets import build_dataset
@@ -37,6 +38,7 @@ def feature_config(cfg, model_id, image_size):
     return fcfg
 
 
+@torch.no_grad()
 def _score_setting(fcfg, model, dataset, matching, cache, verbose):
     """One feature pass over the validation pairs; returns {combo index: PCKMeter}."""
     meters = {i: PCKMeter(fcfg) for i in range(len(matching))}
