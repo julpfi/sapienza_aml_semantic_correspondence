@@ -72,3 +72,12 @@ D-005 = one configuration (`BASE` in `src/config.py`), no command-line overrides
   bias reported for raw DINOv3 features (INSID3, CVPR 2026).
 - **Risk:** the matching settings differ from every DINOv2 run, so comparisons need `compare_runs.py --allow` or a
   re-evaluation at equal settings; the window was chosen on frozen features and is re-swept after training.
+
+## D-012 (2026-11-20): DINOv3 dropped, back to DINOv2
+
+- **Decision:** `ACTIVE_PRESET = None`, so new runs use `BASE` (DINOv2) again. The DINOv3 code and presets stay for reference.
+- **Why:** the `DINOV3_FT_896` fine-tune scored about 28% on the public leaderboard vs 57% for our best DINOv2 model.
+  Frozen, DINOv3 was already 16 points behind DINOv2 at equal settings (24.7 vs 41.1 val PCK@0.10).
+- **Open question:** the literature gap for raw DINOv3-B vs DINOv2 on SPair is a few points (positional bias,
+  INSID3), smaller than ours. A feature-level comparison with the official implementation was not run, so an
+  adapter error is unlikely but not excluded.

@@ -323,7 +323,7 @@ DINOV3_FT_896 = {
 # Settings that get_config() applies on top of BASE, for new runs only (train, and evaluate / submit without --run).
 # None = BASE as written. Saved runs never see it: --run / --resume load their own config.json (missing keys from
 # BASE), so DINOv2 runs keep loading exactly as before.
-ACTIVE_PRESET = DINOV3_FT_896
+ACTIVE_PRESET = None                   # D-012: DINOv3 dropped; presets kept for reference
 
 
 def resolve_paths(cfg):
