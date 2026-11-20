@@ -3,7 +3,8 @@
     python scripts/kaggle_io.py download                         # into data_dir (data/raw locally)
     python scripts/kaggle_io.py submit --file outputs/<run_id>/submission.csv --message "baseline"
 
-Needs KAGGLE_USERNAME and KAGGLE_KEY (from .env or Colab Secrets). Each teammate must accept
+Needs KAGGLE_USERNAME and KAGGLE_KEY, or a new-style API token (KGAT_...) in KAGGLE_API_TOKEN or KAGGLE_KEY
+(from .env or Colab Secrets). Each teammate must accept
 the competition rules on the Kaggle website first, otherwise the download fails with a 403.
 Safe to run repeatedly: a finished download is not repeated.
 """
@@ -28,9 +29,17 @@ OFFICIAL_FILES = ["train.csv", "test.csv", "sample_submission.csv", "make_submis
 
 def kaggle_cli():
     load_secrets()
-    missing = [key for key in ("KAGGLE_USERNAME", "KAGGLE_KEY") if not os.environ.get(key)]
-    if missing:
-        sys.exit(f"Missing {missing}. Put them in .env (local) or Colab Secrets.")
+    # New Kaggle API tokens (KGAT_...) are read from KAGGLE_API_TOKEN, not KAGGLE_KEY: with the token in
+    # KAGGLE_KEY the CLI sends it as a legacy key and the download fails with 401 Unauthorized.
+    key = os.environ.get("KAGGLE_KEY", "").strip()
+    if key.startswith("KGAT_") and not os.environ.get("KAGGLE_API_TOKEN"):
+        os.environ["KAGGLE_API_TOKEN"] = key
+    if os.environ.get("KAGGLE_API_TOKEN"):
+        os.environ.pop("KAGGLE_KEY", None)  # the CLI would otherwise prefer the username / key pair
+    else:
+        missing = [k for k in ("KAGGLE_USERNAME", "KAGGLE_KEY") if not os.environ.get(k)]
+        if missing:
+            sys.exit(f"Missing {missing} (or KAGGLE_API_TOKEN). Put them in .env (local) or Colab Secrets.")
     kaggle = shutil.which("kaggle")
     if kaggle is None:
         sys.exit("Kaggle CLI not found. Install the environment first (environment.yml).")
@@ -47,7 +56,8 @@ def download(cfg):
     data_dir.mkdir(parents=True, exist_ok=True)
     result = subprocess.run([kaggle, "competitions", "download", "-c", cfg["competition"], "-p", str(data_dir)])
     if result.returncode != 0:
-        sys.exit("Kaggle download failed. Have you accepted the competition rules?")
+        sys.exit("Kaggle download failed (see the CLI message above): 401 = wrong key or token, "
+                 "403 = competition rules not accepted with this account.")
     archives = list(data_dir.glob("*.zip"))
     if not archives:
         sys.exit(f"Kaggle reported success, but no zip file is in {data_dir}.")

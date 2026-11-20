@@ -25,8 +25,15 @@ SKIP_ON_COLAB = ("torch", "torchvision")  # keep Colab's CUDA builds
 
 
 def run(command):
-    print("$", " ".join(command))
-    subprocess.run(command, check=True, cwd=REPO_ROOT)
+    """Run a command and stream its output into the notebook cell (a plain subprocess.run writes to the
+    kernel's own stdout, which Colab does not show, so error messages of the step would be lost)."""
+    print("$", " ".join(command), flush=True)
+    process = subprocess.Popen(command, cwd=REPO_ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                               text=True, bufsize=1)
+    for line in process.stdout:
+        print(line, end="", flush=True)
+    if process.wait():
+        raise subprocess.CalledProcessError(process.returncode, command)
 
 
 def pull(branch):
