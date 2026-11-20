@@ -48,15 +48,26 @@ def _score_setting(fcfg, model, dataset, matching, cache, verbose):
         first = samples[0]
         src = model.image_features(first["src_img"], cache=cache, key=first["src_image"])
         trg = model.image_features(first["trg_img"], cache=cache, key=first["trg_image"])
-        src_flip = model.image_features(first["src_img"], flip=True, cache=cache, key=first["src_image"]) \
-            if need_flip else None
-        flipped_src, did_flip = choose_source(src, src_flip, trg)  # depends on the images only
+        src, trg_raw = model.pair_features(src, trg)
+        src_flip, trg_flip = None, trg_raw
+        if need_flip:
+            src_flip_base = model.image_features(first["src_img"], flip=True, cache=cache, key=first["src_image"])
+            src_flip, trg_flip = model.pair_features(src_flip_base, trg)
+        flipped_src, did_flip = choose_source(src, src_flip, trg_raw)  # depends on the images only
         for i, setting in enumerate(matching):
             ccfg = {**fcfg, **setting}
             feats, flipped = (flipped_src, did_flip) if setting["flip_test"] else (src, False)
+            trg_used = trg_flip if flipped else trg_raw
             for s in samples:
-                pred = predict_from_features(feats, trg, s["src_xy"][None], s["src_img"].size, s["trg_img"].size,
-                                             ccfg, flipped)[0]
+                if ccfg.get("constellation_align"):
+                    from src.models.constellation import load_pair_source_xy, predict_with_constellation
+
+                    ctx_xy = load_pair_source_xy(ccfg, s["pair_id"], fallback_xy=s["src_xy"][None])
+                    pred = predict_with_constellation(feats, trg_used, s["src_xy"][None], ctx_xy,
+                                                      s["src_img"].size, s["trg_img"].size, ccfg, flipped)[0][0]
+                else:
+                    pred = predict_from_features(feats, trg_used, s["src_xy"][None], s["src_img"].size,
+                                                 s["trg_img"].size, ccfg, flipped)[0]
                 meters[i].update(s, pred, flipped)
     return meters
 

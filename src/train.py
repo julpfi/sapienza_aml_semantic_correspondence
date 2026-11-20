@@ -99,6 +99,8 @@ def configure_trainable(model, cfg):
         add_group("lora", params, cfg["lr_lora"])
     if cfg["fusion"] == "adapter":
         add_group("adapter", list(model.fusion.parameters()), cfg["lr_adapter"])
+    if cfg.get("cross_transform"):
+        add_group("cross_transform", list(model.cross_transform.parameters()), cfg["lr_cross"])
     if not groups:
         raise ValueError("Nothing to train: train_mode='frozen' with head='none'. Use train_mode='finetune' "
                          "in BASE (src/config.py), or add head='linear' and lr_head for a head-only run.")
@@ -161,10 +163,14 @@ def compute_features(model, samples, cfg, store):
     if cfg["train_mode"] == "frozen":
         src = _backbone_features(model, samples, "src", cfg, store)
         trg = _backbone_features(model, samples, "trg", cfg, store)
-        return model.head(src), model.head(trg)
-    xs = torch.cat([preprocess_image(s["src_img"], cfg) for s in samples]).to(model.device)
-    xt = torch.cat([preprocess_image(s["trg_img"], cfg) for s in samples]).to(model.device)
-    return model(xs), model(xt)
+        src, trg = model.head(src), model.head(trg)
+    else:
+        xs = torch.cat([preprocess_image(s["src_img"], cfg) for s in samples]).to(model.device)
+        xt = torch.cat([preprocess_image(s["trg_img"], cfg) for s in samples]).to(model.device)
+        src, trg = model(xs), model(xt)
+    if hasattr(model, "cross_transform"):
+        src, trg = model.pair_features(src, trg)
+    return src, trg
 
 
 def jitter_labels(trg_resized, image_size, n_cells, std_cells):
@@ -360,7 +366,9 @@ def train(cfg, model, run_id, run_dir, resume=False):
     if wandb_run:
         wandb_run.summary.update({"micro_batch": micro, "total_updates": total_updates,
                                   "trainable_params_M": n_trainable / 1e6, "probe_peak_gb": probe_peak,
-                                  "n_train_queries": n_queries})
+                                  "n_train_queries": n_queries,
+                                  "cross_transform": bool(cfg.get("cross_transform")),
+                                  "constellation_align": bool(cfg.get("constellation_align"))})
 
     def save_last(epoch, batches_done, complete):
         save_checkpoint({

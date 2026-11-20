@@ -26,6 +26,8 @@ def validation_loss(cfg, model, sample, cache):
     """The LOGGED_STATS of one validation query (no augmentation), from the cached features of predict()."""
     src_feats = model.image_features(sample["src_img"], cache=cache, key=sample["src_image"])
     trg_feats = model.image_features(sample["trg_img"], cache=cache, key=sample["trg_image"])
+    if hasattr(model, "cross_transform"):
+        src_feats, trg_feats = model.pair_features(src_feats, trg_feats)
     size = cfg["image_size"]
     stats = matching_loss(src_feats.float(), trg_feats.float(),
                           to_resized(sample["src_xy"][None], sample["src_img"].size, size),
@@ -61,6 +63,11 @@ def evaluate(cfg, model, run_dir, save=True, verbose=True, with_loss=True, cache
     official = official_score(cfg, read_queries(cfg, "val"), frame)
     if official is not None:
         summary["official_score"] = official
+
+    if hasattr(model, "cross_transform"):
+        summary["cross_transform"] = True
+    if cfg.get("constellation_align"):
+        summary["constellation_align"] = True
 
     if save:
         out = Path(run_dir)

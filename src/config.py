@@ -78,6 +78,8 @@ BASE = {
     "splits_dir": None,                # tracked validation split (splits/ in the repo)
     "train_csv": "train.csv",          # relative to data_dir
     "test_csv": "test.csv",
+    "train_pairs_json": "train_pairs.json",
+    "test_pairs_json": "test_pairs.json",
     "sample_submission_csv": "sample_submission.csv",
     "official_metric_py": "metric.py",  # used for evaluation when present in data_dir
     "val_split_file": "val_pair_ids.json",  # relative to splits_dir
@@ -195,7 +197,7 @@ BASE = {
     #   "none"    = DINOv2 only (v2)
     #   "concat"  = normalize(cat(dino, sd_concat_weight * sd)); nothing trained: the frozen gate
     #   "adapter" = normalize(dino + adapter(sd)); the adapter's last layer starts at zero (update 0 = DINOv2)
-    "fusion": "concat",                # v2: "none". D-008: concat = DINOv2 fine-tuned on cat(dino, 0.5 * frozen SD)
+    "fusion": "none",                  # "none" (default on giuseppe branch) | "concat" | "adapter"
     "sd_model_id": "sd2-community/stable-diffusion-2-1",  # stabilityai/stable-diffusion-2-1 is no longer public
     "sd_model_revision": "bb2154823665391b4fb29b0b9cf82a198964ee05",  # Hub commit, checked 2026-11-16
     "sd_image_size": 736,              # SD input side; up-block 1 is 1/16 of it: 46 cells = the DINOv2 grid at 644
@@ -205,6 +207,25 @@ BASE = {
     "adapter_layers": 2,               # bottleneck blocks after the 1x1 input convolution
     "adapter_dim": 256,                # bottleneck width
     "lr_adapter": 3e-4,                # peak lr of the adapter (the old head at 1e-3 flattened the maps); used with fusion only
+
+    # --- Transformation-aware additions (branch giuseppe) ---
+    # 1. Cross-image spatial context & multi-scale geometric adapter (src/models/cross_transform.py):
+    #    trainable multi-scale dilated conv + bidirectional cross-attention between source and target feature maps.
+    "cross_transform": True,           # True = train & apply CrossImageTransform; False = off
+    "cross_dim": 256,                  # internal bottleneck width of the multi-scale + cross-attention adapter
+    "cross_heads": 4,                  # attention heads (cross_dim must be divisible by cross_heads)
+    "cross_dropout": 0.05,
+    "lr_cross": 3e-4,                  # peak lr of the CrossImageTransform parameter group
+    # 2. Pair-level geometric constellation alignment at inference (src/models/constellation.py):
+    #    uses all source_xy context points of the pair in *_pairs.json to fit a robust 2D similarity
+    #    transform (scale/camera-distance, rotation, flip, translation) and add a spatial prior before locate().
+    "constellation_align": False,      # True = refine predictions with the pair's Sim(2) constellation prior
+    "constellation_min_points": 3,     # minimum context points / inliers required to fit Sim(2)
+    "constellation_inlier_px": 84.0,   # RANSAC inlier threshold in resized 644x644 pixels (~6 patches)
+    "constellation_prior_weight": 0.08,  # weight of the Gaussian prior added to the cosine similarity map
+    "constellation_sigma_px": 70.0,    # Gaussian spatial prior std in resized 644x644 pixels (~5 patches)
+    "constellation_min_scale": 0.25,   # minimum accepted zoom ratio between target and source object
+    "constellation_max_scale": 4.0,    # maximum accepted zoom ratio between target and source object
 
     # --- Augmentation (train only; source and target images are augmented separately) ---
     "flip_augment": True,              # Lang ft_pair_flip_aug (both images, keeps left/right consistent)
@@ -254,7 +275,10 @@ BASE = {
 
 # "Off" values of the v3 switches. A run saved before these keys existed gets them, not the current BASE
 # values: BASE may have a switch on for a new experiment while an old run is evaluated or resumed.
-V3_OFF = {"pair_batch": False, "hard_neg_weight": 1.0, "ema_decay": 0.0, "fusion": "none"}
+V3_OFF = {
+    "pair_batch": False, "hard_neg_weight": 1.0, "ema_decay": 0.0, "fusion": "none",
+    "cross_transform": False, "constellation_align": False,
+}
 
 # v2 values of the training, augmentation and fusion keys that D-008 changed. BASE updated with these = the v2 training
 # (run R0 of docs/experiments-sd.md; also what the v2-equivalence checks use). The matching keys stay as in BASE
@@ -264,6 +288,7 @@ V2_TRAINING = {
     "pair_batch": False, "hard_neg_weight": 1.0, "ema_decay": 0.0, "label_jitter": 0.5,
     "aug_rotation_deg": 15.0, "aug_color_jitter": 0.3, "aug_hue_jitter": 0.05, "aug_color_prob": 0.8,
     "aug_grayscale_prob": 0.1, "aug_crop_scale": [0.7, 1.0], "aug_blur_prob": 0.1, "fusion": "none",
+    "cross_transform": False, "constellation_align": False,
 }
 
 

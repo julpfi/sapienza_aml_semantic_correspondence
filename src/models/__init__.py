@@ -32,6 +32,11 @@ class CorrespondenceModel(nn.Module):
 
             self.sd = SDFeatures(cfg)
             self.fusion = Fusion(fusion, out_dim, self.sd.out_dim, cfg)
+            out_dim = self.fusion.out_dim
+        if cfg.get("cross_transform"):
+            from src.models.cross_transform import CrossImageTransform
+
+            self.cross_transform = CrossImageTransform(out_dim, cfg)
 
     @property
     def device(self):
@@ -43,6 +48,15 @@ class CorrespondenceModel(nn.Module):
         if hasattr(self, "fusion"):
             feats = self.fusion(feats, self.sd(x, feats.shape[-2:]))
         return feats
+
+    def pair_features(self, src_feats, trg_feats):
+        """Apply cross_transform (when enabled) to a pair of single-image feature maps [C, h, w] or batches [B, C, h, w]."""
+        if not hasattr(self, "cross_transform"):
+            return src_feats, trg_feats
+        if src_feats.ndim == 3:
+            s, t = self.cross_transform(src_feats[None], trg_feats[None])
+            return s[0], t[0]
+        return self.cross_transform(src_feats, trg_feats)
 
     @torch.no_grad()
     def image_features(self, img, flip=False, cache=None, key=None):
@@ -72,11 +86,21 @@ class CorrespondenceModel(nn.Module):
         cfg = cfg or self.cfg
         src_feats = self.image_features(sample["src_img"], cache=cache, key=sample["src_image"])
         trg_feats = self.image_features(sample["trg_img"], cache=cache, key=sample["trg_image"])
-        src_flip = None
+        src_feats, trg_raw = self.pair_features(src_feats, trg_feats)
+        src_flip, trg_flip = None, trg_raw
         if cfg["flip_test"]:
-            src_flip = self.image_features(sample["src_img"], flip=True, cache=cache, key=sample["src_image"])
-        src_feats, flipped = choose_source(src_feats, src_flip, trg_feats)
-        pred = predict_from_features(src_feats, trg_feats, sample["src_xy"][None], sample["src_img"].size,
+            src_flip_base = self.image_features(sample["src_img"], flip=True, cache=cache, key=sample["src_image"])
+            src_flip, trg_flip = self.pair_features(src_flip_base, trg_feats)
+        src_chosen, flipped = choose_source(src_feats, src_flip, trg_raw)
+        trg_chosen = trg_flip if flipped else trg_raw
+        if cfg.get("constellation_align"):
+            from src.models.constellation import load_pair_source_xy, predict_with_constellation
+
+            ctx_xy = load_pair_source_xy(cfg, sample["pair_id"], fallback_xy=sample["src_xy"][None])
+            pred, _ = predict_with_constellation(src_chosen, trg_chosen, sample["src_xy"][None], ctx_xy,
+                                                 sample["src_img"].size, sample["trg_img"].size, cfg, flipped)
+            return pred[0], flipped
+        pred = predict_from_features(src_chosen, trg_chosen, sample["src_xy"][None], sample["src_img"].size,
                                      sample["trg_img"].size, cfg, flipped)
         return pred[0], flipped
 

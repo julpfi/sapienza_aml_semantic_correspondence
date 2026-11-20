@@ -233,3 +233,8 @@ kaggle.json
 *.ckpt
 .DS_Store
 condaenv.*.requirements.txt
+CATCHUP.md
+kaggle_page.txt
+aml-challenge-2026-27/
+inspect_samples_kaggle.ipynb
+inspect_transformations.ipynb

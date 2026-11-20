@@ -31,6 +31,7 @@ COMMANDS = {
     "check_pair_batch": ["scripts/check_pair_batch.py"],
     "check_lora_ema": ["scripts/check_lora_ema.py"],
     "check_sd_fusion": ["scripts/check_sd_fusion.py"],
+    "check_transforms": ["scripts/check_transforms.py"],
     "compare_runs_self_test": ["scripts/compare_runs.py", "--self-test"],
 }
 
