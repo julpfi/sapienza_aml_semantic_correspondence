@@ -234,6 +234,7 @@ kaggle.json
 .DS_Store
 condaenv.*.requirements.txt
 CATCHUP.md
+NOTES_TRANSFORMATION.md
 kaggle_page.txt
 aml-challenge-2026-27/
 inspect_samples_kaggle.ipynb
