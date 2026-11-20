@@ -62,3 +62,13 @@ D-005 = one configuration (`BASE` in `src/config.py`), no command-line overrides
   settings, memory and micro-batch carry over); no SD fusion, so the run measures the backbone alone.
 - **Sweep:** the existing evaluate-only sweep, not a W&B training sweep: one run's interval is about ±4.5 points,
   so training settings are decided by two-seed runs and `compare_runs.py`, as in experiments-sd.md.
+
+## D-011 (2026-11-20): DINOv3 fine-tuning at the best frozen sweep setting (user request)
+
+- **Decision:** `ACTIVE_PRESET = DINOV3_FT_896`: DINOv3-B/16 at 896 px (56 × 56 cells), `flip_test` True,
+  `soft_window` 7, `soft_temperature` 0.02, `fusion` "none"; training keys as in `BASE` (D-008).
+- **Why:** frozen sweep of run `20261120-104658_evaluate`: 35.5 val PCK@0.10 at this setting vs 24.7 at 736 / no
+  flip / window 11 (frozen DINOv2: 41.1). Every top setting used `flip_test`, a sign of the positional (left/right)
+  bias reported for raw DINOv3 features (INSID3, CVPR 2026).
+- **Risk:** the matching settings differ from every DINOv2 run, so comparisons need `compare_runs.py --allow` or a
+  re-evaluation at equal settings; the window was chosen on frozen features and is re-swept after training.

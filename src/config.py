@@ -296,10 +296,34 @@ DINOV3_FIRST_RUN = {
     "sweep_image_size": [736, 896, 1024],
 }
 
+# DINOv3 fine-tuning at the best frozen sweep setting (run 20261120-104658_evaluate, decisions.md D-011):
+# 896 px + flip_test + window 7 / T 0.02 = 35.5 val PCK@0.10 frozen (24.7 at 736 / no flip / window 11).
+# - 896 px = 56 x 56 cells (DINOv2 at 644: 46 x 46). Cell-based training keys (marginal_radius, label_jitter,
+#   hard_neg_*) are kept in cells, so they are ~18% tighter in image share; aug_edge_margin stays one patch (16 px).
+#   ~1.5x the tokens of 736: slower epochs and a smaller auto micro-batch (still 4 pairs per update).
+# - flip_test is also used by the per-epoch validation, so best.pt is chosen with the matching of the submission.
+#   It mirrors the source when that aligns better: it works around DINOv3's positional bias (left/right) at inference.
+# - Training keys stay as in BASE (D-008), fusion "none". The frozen-sweep window may be too wide or narrow after
+#   fine-tuning (sharper peaks), so the evaluate sweep re-scores windows / temperatures around it.
+# - Not directly comparable with runs at other matching settings: compare_runs.py needs --allow for the differing
+#   keys, or re-evaluate the reference at the same settings.
+DINOV3_FT_896 = {
+    **DINOV3_B16,
+    "image_size": 896,
+    "fusion": "none",
+    "flip_test": True,
+    "soft_window": 7,
+    "soft_temperature": 0.02,
+    "sweep_flip_test": [True],
+    "sweep_soft_window": [5, 7, 9, 11],
+    "sweep_soft_temperature": [0.01, 0.02, 0.04],
+    "sweep_image_size": [],            # trained at 896: score that size only
+}
+
 # Settings that get_config() applies on top of BASE, for new runs only (train, and evaluate / submit without --run).
 # None = BASE as written. Saved runs never see it: --run / --resume load their own config.json (missing keys from
 # BASE), so DINOv2 runs keep loading exactly as before.
-ACTIVE_PRESET = DINOV3_FIRST_RUN
+ACTIVE_PRESET = DINOV3_FT_896
 
 
 def resolve_paths(cfg):

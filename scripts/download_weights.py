@@ -39,9 +39,17 @@ def main(argv=None):
 
     from huggingface_hub import snapshot_download
 
+    from huggingface_hub.errors import GatedRepoError
+
     target = local_model_dir(cfg)
-    path = snapshot_download(repo_id=cfg["model_id"], revision=cfg["model_revision"], local_dir=target,
-                             allow_patterns=["*.json", "*.safetensors", "*.txt", "*.md"])
+    try:
+        path = snapshot_download(repo_id=cfg["model_id"], revision=cfg["model_revision"], local_dir=target,
+                                 allow_patterns=["*.json", "*.safetensors", "*.txt", "*.md"])
+    except GatedRepoError:
+        sys.exit(f"{cfg['model_id']} is gated and the HF_TOKEN account has no access yet. Open "
+                 f"https://huggingface.co/{cfg['model_id']} logged in with that account and request access (wait "
+                 "for 'accepted'); a fine-grained token also needs 'Read access to contents of all public gated "
+                 "repos you can access'. To run DINOv2 meanwhile: ACTIVE_PRESET = None in src/config.py.")
     print(f"{cfg['model_id']}@{cfg['model_revision']} -> {path}")
 
     if args.dinov3 or cfg["fusion"] == "none":
