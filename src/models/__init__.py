@@ -1,4 +1,4 @@
-"""Correspondence model: DINOv2 backbone + head (+ optional Stable Diffusion fusion) + matching.
+"""Correspondence model: DINOv2 or DINOv3 backbone (chosen by model_id) + head (+ optional Stable Diffusion fusion) + matching.
 
 Every prediction is (x, y) in original target-image pixels.
 """
@@ -8,7 +8,7 @@ import torch.nn as nn
 
 from data.transforms import preprocess_image
 from src.config import resolved_device
-from src.models.backbone import DinoBackbone
+from src.models.backbone_dinov3 import build_backbone
 from src.models.head import ProjectionHead
 from src.models.lora import apply_lora
 from src.models.matching import FeatureCache, choose_source, predict_from_features
@@ -18,7 +18,7 @@ class CorrespondenceModel(nn.Module):
     def __init__(self, cfg):
         super().__init__()
         self.cfg = cfg
-        self.backbone = DinoBackbone(cfg)
+        self.backbone = build_backbone(cfg)  # DinoBackbone, or Dinov3Backbone for a DINOv3 model_id
         if cfg["train_mode"] == "lora":
             apply_lora(self.backbone, cfg)
         in_dim = self.backbone.model.config.hidden_size

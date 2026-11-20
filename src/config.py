@@ -2,6 +2,7 @@
 
 Rules:
 - There is one configuration: BASE. To change a setting, edit it here.
+- ACTIVE_PRESET (below BASE) is applied on top of BASE by get_config() for new runs; None = BASE as written.
 - Every run saves the full config to <output_dir>/<run_id>/config.json.
 - Paths are None in BASE and are filled in for the detected runtime (local, Colab or Kaggle).
   The SC_* environment variables override them.
@@ -266,6 +267,40 @@ V2_TRAINING = {
     "aug_grayscale_prob": 0.1, "aug_crop_scale": [0.7, 1.0], "aug_blur_prob": 0.1, "fusion": "none",
 }
 
+# DINOv3 ViT-B/16 (src/models/backbone_dinov3.py). BASE updated with these = the same pipeline on DINOv3.
+# Patch 16: 736 px gives the 46 x 46 grid of DINOv2 at 644, so every setting counted in cells keeps its meaning;
+# aug_edge_margin is one patch (16 / 736 = 14 / 644 of the image side). The weights are gated on the Hub:
+# accept the DINOv3 license with the account of HF_TOKEN. Compare with a DINOv2 run: compare_runs.py --allow image_size.
+DINOV3_B16 = {
+    "model_id": "facebook/dinov3-vitb16-pretrain-lvd1689m",
+    "model_revision": "5931719e67bbdb9737e363e781fb0c67687896bc",  # Hub commit, checked 2026-11-19
+    "image_size": 736,
+    "aug_edge_margin": 16,
+}
+
+# First DINOv3 run (decisions.md D-010): DINOV3_B16 + the D-008 training of BASE, without SD fusion.
+# - Training keys stay as in BASE (finetune blocks 10-11 + norm, lr_backbone 1.5e-5, layer_decay 0.75, marginal loss
+#   0.07 -> 0.04, pair batch 4, hard negatives 3.0, EMA 0.99, 8 epochs). Same 46 x 46 grid and the same token count
+#   (2,116 patches + 5 prefix tokens vs + 1), so the cell-based settings, the memory and the auto micro-batch carry over.
+#   A DINOv2 twin for compare_runs.py is BASE with only fusion "none" (+ --allow image_size).
+# - fusion "none": measures the backbone alone; SD would cost a second fp16 network and mix two effects.
+#   Add "concat" back only after DINOv3 beats DINOv2.
+# - Sweep (evaluate only, report): DINOv3 cosine maps may peak differently from DINOv2, so the window / temperature
+#   are swept again, and DINOv3 is said to improve with resolution (RoPE, no position table), so larger inputs are
+#   scored too (multiples of 16; a larger input = a finer grid, so the cell-based windows cover less of the image).
+DINOV3_FIRST_RUN = {
+    **DINOV3_B16,
+    "fusion": "none",
+    "sweep_soft_window": [7, 9, 11, 13],
+    "sweep_soft_temperature": [0.01, 0.02, 0.04],
+    "sweep_image_size": [736, 896, 1024],
+}
+
+# Settings that get_config() applies on top of BASE, for new runs only (train, and evaluate / submit without --run).
+# None = BASE as written. Saved runs never see it: --run / --resume load their own config.json (missing keys from
+# BASE), so DINOv2 runs keep loading exactly as before.
+ACTIVE_PRESET = DINOV3_FIRST_RUN
+
 
 def resolve_paths(cfg):
     """Fill in path settings left as None for the detected runtime. Returns cfg."""
@@ -285,8 +320,11 @@ def resolve_paths(cfg):
 
 
 def get_config():
-    """A copy of BASE with the paths resolved for the runtime."""
-    return resolve_paths(deepcopy(BASE))
+    """A copy of BASE, updated with ACTIVE_PRESET, with the paths resolved for the runtime."""
+    cfg = deepcopy(BASE)
+    if ACTIVE_PRESET:
+        cfg.update(deepcopy(ACTIVE_PRESET))
+    return resolve_paths(cfg)
 
 
 def data_path(cfg, key):

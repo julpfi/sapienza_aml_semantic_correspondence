@@ -259,6 +259,33 @@ and bootstraps the validation pairs: difference, 95% interval, P(A better) for P
 and every error rate. Each run needs `per_query.csv`: run `python run.py --mode evaluate --run <run_id>` after
 training, because training does not write it.
 
+## 8c. DINOv3 backbone (addition, off by default)
+
+`src/models/backbone_dinov3.py` adds DINOv3 ViT-B/16 (`facebook/dinov3-vitb16-pretrain-lvd1689m`) next to DINOv2.
+`BASE` is unchanged: the backbone follows from `model_id` (`build_backbone`), so DINOv2 runs and their saved
+`config.json` load exactly as before. To use it, update `BASE` with `DINOV3_B16` (`src/config.py`): `model_id`,
+`model_revision`, `image_size` 736, `aug_edge_margin` 16. Simplest: `ACTIVE_PRESET = DINOV3_FIRST_RUN` (on now, D-010)
+or `ACTIVE_PRESET = None` for DINOv2; `get_config()` applies it on top of `BASE` for new runs only. Everything else (finetune / LoRA, loss, matching,
+pair batch, EMA, SD fusion) works unchanged.
+
+| | DINOv2-B/14 (`BASE`) | DINOv3-B/16 (`DINOV3_B16`) |
+|---|---|---|
+| Patch / input / grid | 14 px / 644 / 46 × 46 | 16 px / **736** / 46 × 46 (same grid, so settings in cells keep their meaning) |
+| Tokens | CLS + patches | CLS + **4 registers** + patches (prefix dropped) |
+| Position encoding | learned table for 37 × 37, interpolated (`pos_embed_interp` "hub") | **RoPE**: patch-centre coordinates in [-1, 1], no table, any grid; `pos_embed_interp*` unused |
+| Blocks / final norm (Hugging Face) | `encoder.layer` / `layernorm` | `model.layer` / `norm` |
+| `finetune` / `lora` | blocks 10-11 + norm / q, v of the last 6 blocks | same, same parameter counts |
+
+- **Weights are gated.** Accept the license on the model page with the Hugging Face account whose `HF_TOKEN`
+  you use. Without a local snapshot the model is loaded from the Hub at the pinned revision. To keep it on Drive
+  (and for Kaggle, which is offline): `python scripts/download_weights.py --dinov3` → `<weights_dir>/dinov3-vitb16-pretrain-lvd1689m`.
+- **RoPE in training.** The released model would randomly rescale the RoPE coordinates in training mode
+  (pretraining augmentation). The backbone keeps that module in eval mode, so training and inference see the same
+  positions.
+- **Comparing with DINOv2:** the input sizes differ, so `compare_runs.py` needs `--allow image_size`
+  (in the notebook: `COMPARE = "v3_s0,v3_s1 v2_s0,v2_s1 --allow image_size"`).
+- Checks: `python scripts/check_dinov3.py` (tiny random DINOv3 and DINOv2, CPU, no download).
+
 ## 9. Reading the W&B charts
 
 Charts are logged once per optimiser update (train) and once per epoch (val). System charts (GPU, CPU, disk)

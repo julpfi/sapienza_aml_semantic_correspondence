@@ -35,3 +35,30 @@ D-005 = one configuration (`BASE` in `src/config.py`), no command-line overrides
   key; `BASE` updated with it is R0. The v2-equivalence checks use it. Old runs still load through `V3_OFF` and their
   own `config.json`.
 - **Risk:** this run mixes several changes; its effect cannot be split per change without the R1-R4 ablations.
+
+## D-009 (2026-11-19): DINOv3 ViT-B/16 as an additional backbone
+
+- **Decision:** add `src/models/backbone_dinov3.py` (`Dinov3Backbone`, a subclass of `DinoBackbone` with the same
+  interface) and the preset `DINOV3_B16` in `src/config.py`: `facebook/dinov3-vitb16-pretrain-lvd1689m` at a pinned
+  revision, `image_size` 736, `aug_edge_margin` 16. `build_backbone` chooses the class from `model_id`; `BASE` stays
+  on DINOv2.
+- **Why:** after fine-tuning, about 18 points of queries lie between PCK@0.05 and PCK@0.10 (precision), and DINOv3
+  is trained for cleaner dense features at high resolution (Gram anchoring, RoPE).
+- **Choices:** B/16 at 736 px gives the 46 × 46 grid of DINOv2 at 644, so the comparison measures the features,
+  not the grid size, and every setting counted in cells is unchanged. RoPE coordinate augmentation stays off
+  (the module is kept in eval mode). Larger models and resolutions only after the frozen comparison.
+- **Rejected:** a new `backbone` key (the model id already says which family it is, and old runs need no
+  migration); editing `DinoBackbone` (the DINOv2 path must stay byte-for-byte the same).
+
+## D-010 (2026-11-20): first DINOv3 run through `ACTIVE_PRESET`
+
+- **Decision:** `src/config.py` gets `DINOV3_FIRST_RUN` (= `DINOV3_B16` + `fusion` "none" + a DINOv3 evaluation
+  sweep: `soft_window` 7/9/11/13, `soft_temperature` 0.01/0.02/0.04, `image_size` 736/896/1024) and `ACTIVE_PRESET`,
+  which `get_config()` applies on top of `BASE` for new runs. `BASE` itself stays on DINOv2.
+- **Why:** switching the backbone touches four keys at once; one line on and off is easier to undo than editing
+  `BASE` by hand (D-005 rule: undo the edit before the next run). Saved runs load their own `config.json` filled
+  from `BASE`, so the preset never changes how an old run is evaluated or resumed.
+- **Hyperparameters:** the D-008 training of `BASE` unchanged (same 46 × 46 grid and token count, so cell-based
+  settings, memory and micro-batch carry over); no SD fusion, so the run measures the backbone alone.
+- **Sweep:** the existing evaluate-only sweep, not a W&B training sweep: one run's interval is about ±4.5 points,
+  so training settings are decided by two-seed runs and `compare_runs.py`, as in experiments-sd.md.

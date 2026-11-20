@@ -14,7 +14,8 @@ run.py              Single entry point: --mode train | evaluate | submit
 environment.yml     Dependencies (conda env `advance`)
 .env.example        Secret names; copy to .env (ignored by git)
 src/config.py       The only configuration (BASE) and runtime paths (local / Colab / Kaggle)
-src/models/         DINOv2 backbone (Hugging Face), optional head (old runs), matching, losses
+src/models/         DINOv2 backbone (Hugging Face), DINOv3 backbone (backbone_dinov3.py), optional head (old runs),
+                    matching, losses
 src/train.py        Training: fine-tuning the last two blocks (T4: auto batch, AdamW + OneCycleLR, layer decay)
 src/augment.py      Training augmentation (flip, crop, rotation, colour) with the edge rule
 src/evaluate.py     Validation PCK report (groups, error types)
