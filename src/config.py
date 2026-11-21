@@ -167,6 +167,8 @@ BASE = {
     "loss_temperature_epochs": 3.0,    # v2: 2.0. Length of the temperature ramp in epochs (3.0 = bottom reached at the end of epoch 2)
     "label_sigma": 1.0,                # soft_ce: Gaussian label width in patches (0 = one-hot)
     "marginal_radius": 1.0,            # marginal: positive cells within this many cells of a target (Lang: 1.0)
+    "loss_upsample": 1,                # >1 upsamples trg_feats before loss (2 = 92x92, eliminates 0-cell queries)
+    "adaptive_pos_radius": False,      # True = cap marginal positive radius at 0.08 * object_size_in_cells
     "checkpoint_every_steps": 0,       # last.pt every N updates; 0 = end of epoch only (fewer Drive writes)
     "val_every_epoch": True,
     # Final submission only: also train on the validation pairs (+22% queries). Validation, best.pt
@@ -184,12 +186,14 @@ BASE = {
     "hard_neg_weight": 3.0,            # 1.0 = off (v2); try 2.0 / 4.0 around it
     "hard_neg_radius": 1.0,            # cells around another query's target that are negatives
     "hard_neg_exclusion": 2.0,         # cells around the query's own accepted targets that are never negatives
-    # LoRA (train_mode "lora"): low-rank updates on the attention query/value of the last lora_blocks blocks;
+    # LoRA (train_mode "lora"): low-rank updates on selected attention/MLP linears of the last lora_blocks blocks;
     # everything else frozen. B starts at zero, so update 0 = frozen DINOv2.
     "lora_rank": 8,                    # GECO / common range 8-16
     "lora_alpha": 16,                  # update scale = lora_alpha / lora_rank
     "lora_dropout": 0.05,
     "lora_blocks": 6,                  # last N blocks get LoRA
+    "lora_targets": ["q_proj", "v_proj"],  # linear layers wrapped by LoRA; lorav2 uses attention + MLP
+    "lora_train_layernorm": False,     # True = also train LayerNorms in last lora_blocks + final norm (lorav2)
     "lr_lora": 1e-4,                   # peak lr of the LoRA parameters
     # EMA of the trained weights: validation and best.pt use the averaged weights.
     "ema_decay": 0.99,                 # 0 = off (v2); 0.99 = memory of ~100 updates
@@ -286,6 +290,7 @@ BASE = {
 V3_OFF = {
     "pair_batch": False, "hard_neg_weight": 1.0, "ema_decay": 0.0, "fusion": "none",
     "cross_transform": False, "constellation_align": False, "object_zoom": False,
+    "loss_upsample": 1, "adaptive_pos_radius": False, "lora_train_layernorm": False,
 }
 
 # v2 values of the training, augmentation and fusion keys that D-008 changed. BASE updated with these = the v2 training
@@ -297,7 +302,42 @@ V2_TRAINING = {
     "aug_rotation_deg": 15.0, "aug_color_jitter": 0.3, "aug_hue_jitter": 0.05, "aug_color_prob": 0.8,
     "aug_grayscale_prob": 0.1, "aug_crop_scale": [0.7, 1.0], "aug_blur_prob": 0.1, "fusion": "none",
     "cross_transform": False, "constellation_align": False, "object_zoom": False,
+    "loss_upsample": 1, "adaptive_pos_radius": False, "lora_train_layernorm": False,
 }
+
+# Unified winners preset: lorav2 attention+MLP LoRA (less overfitting on unseen test images) +
+# analysis_report 92x92 upsampled loss & scale-adaptive positive radius + wider scale/rotation
+# augmentation + 2-stage object-centric zoom at inference (+9.4 pts on Kaggle).
+UNIFIED_LORA = {
+    "train_mode": "lora",
+    "lora_blocks": 4,
+    "lora_rank": 8,
+    "lora_alpha": 16,
+    "lora_dropout": 0.05,
+    "lora_targets": ["q_proj", "k_proj", "v_proj", "o_proj", "fc1", "fc2"],
+    "lora_train_layernorm": True,
+    "lr_lora": 1e-4,
+    "epochs": 6,
+    "warmup_epochs": 1.0,
+    "loss": "marginal",
+    "loss_upsample": 2,
+    "adaptive_pos_radius": True,
+    "loss_temperature": 0.03,
+    "loss_temperature_start": 0.06,
+    "loss_temperature_epochs": 2.0,
+    "hard_neg_weight": 5.0,
+    "aug_rotation_deg": 25.0,
+    "aug_crop_scale": [0.45, 1.0],
+    "cross_transform": False,
+    "constellation_align": False,
+    "object_zoom": True,
+    "fusion": "none",
+}
+
+PRESETS = {
+    "unified_lora": UNIFIED_LORA,
+}
+ACTIVE_PRESET = None
 
 
 def resolve_paths(cfg):
@@ -317,9 +357,15 @@ def resolve_paths(cfg):
     return cfg
 
 
-def get_config():
-    """A copy of BASE with the paths resolved for the runtime."""
-    return resolve_paths(deepcopy(BASE))
+def get_config(preset=None):
+    """A copy of BASE (optionally updated with a named preset) with paths resolved for the runtime."""
+    cfg = deepcopy(BASE)
+    chosen = preset or os.environ.get("SC_PRESET") or ACTIVE_PRESET
+    if chosen and chosen != "none":
+        if chosen not in PRESETS:
+            raise ValueError(f"Unknown preset {chosen!r}. Use one of {sorted(PRESETS)} or 'none'.")
+        cfg.update(deepcopy(PRESETS[chosen]))
+    return resolve_paths(cfg)
 
 
 def data_path(cfg, key):

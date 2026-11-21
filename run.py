@@ -31,10 +31,19 @@ def parse_args(argv=None):
     parser.add_argument("--run", metavar="RUN_ID", help="evaluate/submit: use this run's config and best.pt")
     parser.add_argument("--require-gpu", action="store_true", help="Stop if no CUDA GPU is available")
     parser.add_argument("--dry-run", action="store_true", help="Print the settings and check the files only")
+    parser.add_argument("--preset", default=None, help="Apply a named config preset from src/config.py (new runs)")
+    parser.add_argument("--image-size", type=int, default=None, help="Override cfg['image_size'] for evaluate/submit")
+    parser.add_argument("--soft-window", type=int, default=None, help="Override cfg['soft_window']")
+    parser.add_argument("--soft-temperature", type=float, default=None, help="Override cfg['soft_temperature']")
+    parser.add_argument("--flip-test", action=argparse.BooleanOptionalAction, default=None,
+                        help="Override cfg['flip_test'] for evaluate/submit")
     parser.add_argument("--object-zoom", action=argparse.BooleanOptionalAction, default=None,
                         help="Override cfg['object_zoom'] for evaluate/submit")
     parser.add_argument("--constellation-align", action=argparse.BooleanOptionalAction, default=None,
                         help="Override cfg['constellation_align'] for evaluate/submit")
+    parser.add_argument("--cross-transform", action=argparse.BooleanOptionalAction, default=None,
+                        help="Override cfg['cross_transform'] for new runs")
+    parser.add_argument("--fusion", default=None, help="Override cfg['fusion'] for new runs")
     args = parser.parse_args(argv)
 
     if args.resume and args.mode != "train":
@@ -46,7 +55,7 @@ def parse_args(argv=None):
 
 def load_config(args):
     """The config of a new run (BASE), or the saved config of an existing run."""
-    cfg = get_config()
+    cfg = get_config(preset=None if (args.resume or args.run) else args.preset)
     run_id = args.resume or args.run
     if run_id:
         cfg = load_run_config(run_id, cfg["output_dir"])
@@ -55,10 +64,13 @@ def load_config(args):
     else:
         cfg["git_commit"] = git_commit()
         run_id = None
-    if args.object_zoom is not None:
-        cfg["object_zoom"] = args.object_zoom
-    if args.constellation_align is not None:
-        cfg["constellation_align"] = args.constellation_align
+    for attr, key in (("image_size", "image_size"), ("soft_window", "soft_window"),
+                      ("soft_temperature", "soft_temperature"), ("flip_test", "flip_test"),
+                      ("object_zoom", "object_zoom"), ("constellation_align", "constellation_align"),
+                      ("cross_transform", "cross_transform"), ("fusion", "fusion")):
+        val = getattr(args, attr)
+        if val is not None:
+            cfg[key] = val
     return cfg, run_id
 
 

@@ -33,17 +33,21 @@ def lora_parameters(model):
 
 
 def apply_lora(backbone, cfg):
-    """Wrap attention q_proj and v_proj of the last cfg["lora_blocks"] blocks; return the LoRA parameters.
+    """Wrap requested attention/MLP linear layers of the last cfg["lora_blocks"] blocks; return LoRA params.
 
+    Default targets ("q_proj", "v_proj") match the v3 check suite; cfg["lora_targets"] can expand
+    to ("q_proj", "k_proj", "v_proj", "o_proj", "fc1", "fc2") as in lorav2.
     The wrapped layer equals the base layer at init. Idempotent. The new parameters are created with
     requires_grad True; DinoBackbone.freeze() turns them off, so the trainer re-enables lora_parameters.
     """
     if cfg["lora_blocks"] < 1:  # [-0:] would wrap every block
         raise ValueError(f"lora_blocks must be >= 1, got {cfg['lora_blocks']}")
+    targets = tuple(cfg.get("lora_targets", ("q_proj", "v_proj")))
     for block in list(backbone.blocks)[-cfg["lora_blocks"]:]:
-        attn = block.attention  # transformers 5.x: q_proj / k_proj / v_proj / o_proj directly on the attention
-        for name in ("q_proj", "v_proj"):
-            layer = getattr(attn, name)
-            if not isinstance(layer, LoRALinear):
-                setattr(attn, name, LoRALinear(layer, cfg["lora_rank"], cfg["lora_alpha"], cfg["lora_dropout"]))
+        parents = [p for p in (getattr(block, "attention", None), getattr(block, "mlp", None)) if p is not None]
+        for parent in parents:
+            for name in targets:
+                layer = getattr(parent, name, None)
+                if isinstance(layer, nn.Linear) and not isinstance(layer, LoRALinear):
+                    setattr(parent, name, LoRALinear(layer, cfg["lora_rank"], cfg["lora_alpha"], cfg["lora_dropout"]))
     return lora_parameters(backbone)

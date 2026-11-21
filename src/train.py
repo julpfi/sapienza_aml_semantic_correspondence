@@ -96,6 +96,12 @@ def configure_trainable(model, cfg):
         params = list(lora_parameters(model))
         if not params:
             raise ValueError("train_mode='lora' but the model has no LoRA parameters (apply_lora not called?).")
+        if cfg.get("lora_train_layernorm"):
+            for block in list(model.backbone.blocks)[-cfg["lora_blocks"]:]:
+                for mod in block.modules():
+                    if isinstance(mod, torch.nn.LayerNorm):
+                        params.extend(mod.parameters())
+            params.extend(model.backbone.layernorm.parameters())
         add_group("lora", params, cfg["lr_lora"])
     if cfg["fusion"] == "adapter":
         add_group("adapter", list(model.fusion.parameters()), cfg["lr_adapter"])
@@ -200,7 +206,8 @@ def batch_loss(model, samples, cfg, store, train=True, temperature=None):
         if train:
             trg = jitter_labels(trg, size, trg_feats.shape[-1], cfg["label_jitter"])
         stats.append(matching_loss(src_feats[b], trg_feats[b],
-                                   to_resized(s["src_xy"][None], s["src_img"].size, size), trg, cfg, temperature))
+                                   to_resized(s["src_xy"][None], s["src_img"].size, size), trg, cfg, temperature,
+                                   scale_px=s.get("scale"), trg_wh=s["trg_img"].size))
     return tuple(torch.stack(values) for values in zip(*stats))
 
 
@@ -217,7 +224,8 @@ def pair_batch_loss(model, items, cfg, store, train=True, temperature=None):
         own = [jitter_labels(t, size, w, cfg["label_jitter"]) for t in trg] if train else trg
         src = to_resized(item["src_xys"], item["src_img"].size, size)
         item_stats, item_negatives = pair_matching_loss(src_feats[b], trg_feats[b], src, own, cfg, temperature,
-                                                        neg_xys_resized=trg, return_negatives=True)
+                                                        neg_xys_resized=trg, return_negatives=True,
+                                                        scales_px=item.get("scale"), trg_wh=item["trg_img"].size)
         stats.append(item_stats)
         if hard:
             n_negatives.append(item_negatives)

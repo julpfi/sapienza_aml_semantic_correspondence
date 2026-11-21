@@ -67,7 +67,28 @@ def positive_cells(trg_xys_resized, h, w, image_size, radius, device, dist=None)
     return mask
 
 
-def matching_loss(src_feats, trg_feats, src_xy_resized, trg_xys_resized, cfg, temperature=None):
+def _upsample_feats(trg_feats, cfg):
+    """Optionally upsample target feature map [C, h, w] before loss computation (loss_upsample > 1)."""
+    up = int(cfg.get("loss_upsample", 1))
+    if up <= 1:
+        return trg_feats
+    up_feats = F.interpolate(trg_feats[None], scale_factor=up, mode="bilinear", align_corners=False)[0]
+    return F.normalize(up_feats, dim=0)
+
+
+def _pos_radius(cfg, w, scale_px=None, trg_wh=None):
+    """Positive cell radius in feature-map cells (scaled by loss_upsample, optionally capped by 0.08*L)."""
+    up = int(cfg.get("loss_upsample", 1))
+    r = float(cfg["marginal_radius"]) * up
+    if cfg.get("adaptive_pos_radius") and scale_px is not None and trg_wh is not None:
+        l_res = float(scale_px) * (float(cfg["image_size"]) / max(float(trg_wh[0]), float(trg_wh[1])))
+        l_cells = l_res * (float(w) / float(cfg["image_size"]))
+        r = min(r, max(0.0, 0.08 * l_cells))
+    return r
+
+
+def matching_loss(src_feats, trg_feats, src_xy_resized, trg_xys_resized, cfg, temperature=None,
+                  scale_px=None, trg_wh=None):
     """src_feats, trg_feats [C, h, w]; src_xy_resized [1, 2]; trg_xys_resized [N, 2] (resized pixels).
     temperature: softmax temperature, default cfg["loss_temperature"] (train.py passes the annealed one).
 
@@ -79,23 +100,27 @@ def matching_loss(src_feats, trg_feats, src_xy_resized, trg_xys_resized, cfg, te
         entropy_norm      H(p) / log(n_cells): 0 = one-hot, 1 = uniform over the cells
     """
     size = cfg["image_size"]
+    trg_feats = _upsample_feats(trg_feats, cfg)
     query = sample_point_features(src_feats, src_xy_resized.to(src_feats.device), size)  # [1, C]
     logits = (query @ trg_feats.flatten(1))[0] / (temperature or cfg["loss_temperature"])
-    return _query_loss(logits, trg_xys_resized, trg_feats.shape[1:], cfg, trg_feats.device)
+    pos_r = _pos_radius(cfg, trg_feats.shape[-1], scale_px=scale_px, trg_wh=trg_wh)
+    return _query_loss(logits, trg_xys_resized, trg_feats.shape[1:], cfg, trg_feats.device, pos_radius=pos_r)
 
 
-def _query_loss(logits, trg_xys_resized, hw, cfg, device):
+def _query_loss(logits, trg_xys_resized, hw, cfg, device, pos_radius=None):
     """LOSS_STATS of one query from its logits [h*w] (temperature and any bias already applied)."""
     h, w = hw
     size, log_cells = cfg["image_size"], math.log(h * w)
     log_probs = F.log_softmax(logits, -1)  # [h*w]
     entropy_norm = -(log_probs.exp() * log_probs).sum().detach() / log_cells
     if cfg["loss"] == "soft_ce":
-        target = target_distribution(trg_xys_resized, h, w, size, cfg["label_sigma"], device)
+        sigma = cfg["label_sigma"] * int(cfg.get("loss_upsample", 1))
+        target = target_distribution(trg_xys_resized, h, w, size, sigma, device)
         loss = -(target * log_probs).sum()
         chance, floor = log_cells, float(-torch.xlogy(target, target).sum())
     elif cfg["loss"] == "marginal":
-        mask = positive_cells(trg_xys_resized, h, w, size, cfg["marginal_radius"], device)
+        r = cfg["marginal_radius"] if pos_radius is None else pos_radius
+        mask = positive_cells(trg_xys_resized, h, w, size, r, device)
         loss = -torch.logsumexp(log_probs[mask], 0)
         chance, floor = log_cells - math.log(int(mask.sum())), 0.0
     else:
@@ -103,7 +128,7 @@ def _query_loss(logits, trg_xys_resized, hw, cfg, device):
     return loss, (loss.detach() - floor) / (chance - floor), entropy_norm
 
 
-def hard_negative_cells(neg_xys_resized, h, w, cfg, device, pos_xys_resized=None):
+def hard_negative_cells(neg_xys_resized, h, w, cfg, device, pos_xys_resized=None, pos_radii=None):
     """Hard negatives of the queries of one pair: bool [K, h*w].
 
     neg_xys_resized: K tensors [N_k, 2], the accepted targets of each query (resized pixels).
@@ -112,19 +137,23 @@ def hard_negative_cells(neg_xys_resized, h, w, cfg, device, pos_xys_resized=None
     positives (positive_cells of pos_xys_resized[k], default neg_xys_resized[k]). One query -> empty.
     """
     size = cfg["image_size"]
+    up = int(cfg.get("loss_upsample", 1))
+    neg_r = float(cfg["hard_neg_radius"]) * up
+    excl_r = float(cfg["hard_neg_exclusion"]) * up
     pos_xys_resized = neg_xys_resized if pos_xys_resized is None else pos_xys_resized
+    radii = [cfg["marginal_radius"] * up] * len(neg_xys_resized) if pos_radii is None else pos_radii
     dists = [_cell_distances(xys, h, w, size, device) for xys in neg_xys_resized]  # K x [N_k, h*w]
-    near = torch.stack([(dist <= cfg["hard_neg_radius"]).any(0) for dist in dists])  # [K, h*w]
+    near = torch.stack([(dist <= neg_r).any(0) for dist in dists])  # [K, h*w]
     others = near.sum(0, keepdim=True) - near.long() > 0  # near the targets of at least one other query
-    own = torch.stack([(dist <= cfg["hard_neg_exclusion"]).any(0)
-                       | positive_cells(pos, h, w, size, cfg["marginal_radius"], device,
+    own = torch.stack([(dist <= excl_r).any(0)
+                       | positive_cells(pos, h, w, size, rad, device,
                                         dist=dist if pos is xys else None)
-                       for xys, pos, dist in zip(neg_xys_resized, pos_xys_resized, dists)])
+                       for xys, pos, dist, rad in zip(neg_xys_resized, pos_xys_resized, dists, radii)])
     return others & ~own
 
 
 def pair_matching_loss(src_feats, trg_feats, src_xys_resized, trg_xys_resized, cfg, temperature=None,
-                       neg_xys_resized=None, return_negatives=False):
+                       neg_xys_resized=None, return_negatives=False, scales_px=None, trg_wh=None):
     """matching_loss for all K queries of one image pair, from one similarity [K, h*w].
 
     src_feats, trg_feats [C, h, w]; src_xys_resized [K, 2]; trg_xys_resized: K tensors [N_k, 2] (the
@@ -137,15 +166,20 @@ def pair_matching_loss(src_feats, trg_feats, src_xys_resized, trg_xys_resized, c
     Returns the three LOSS_STATS as tensors [K], gradients on the first only. With return_negatives:
     (those three, hard-negative cell count per query [K] or None when hard_neg_weight is 1).
     """
+    trg_feats = _upsample_feats(trg_feats, cfg)
     _, h, w = trg_feats.shape
     queries = sample_point_features(src_feats, src_xys_resized.to(src_feats.device), cfg["image_size"])  # [K, C]
     logits = (queries @ trg_feats.flatten(1)) / (temperature or cfg["loss_temperature"])  # [K, h*w]
+    pos_radii = [_pos_radius(cfg, w, scale_px=scales_px[k] if scales_px is not None else None, trg_wh=trg_wh)
+                 for k in range(len(logits))]
     weight, n_negatives = cfg["hard_neg_weight"], None
     if weight > 1:
         negatives = hard_negative_cells(trg_xys_resized if neg_xys_resized is None else neg_xys_resized,
-                                        h, w, cfg, trg_feats.device, pos_xys_resized=trg_xys_resized)
+                                        h, w, cfg, trg_feats.device, pos_xys_resized=trg_xys_resized,
+                                        pos_radii=pos_radii)
         logits = logits + math.log(weight) * negatives
         n_negatives = negatives.sum(-1)
-    stats = [_query_loss(logits[k], trg_xys_resized[k], (h, w), cfg, trg_feats.device) for k in range(len(logits))]
+    stats = [_query_loss(logits[k], trg_xys_resized[k], (h, w), cfg, trg_feats.device, pos_radius=pos_radii[k])
+             for k in range(len(logits))]
     stats = tuple(torch.stack(values) for values in zip(*stats))
     return (stats, n_negatives) if return_negatives else stats
