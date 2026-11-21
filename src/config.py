@@ -362,9 +362,10 @@ def get_config(preset=None):
     cfg = deepcopy(BASE)
     chosen = preset or os.environ.get("SC_PRESET") or ACTIVE_PRESET
     if chosen and chosen != "none":
-        if chosen not in PRESETS:
+        norm = chosen.replace("-", "_")
+        if norm not in PRESETS:
             raise ValueError(f"Unknown preset {chosen!r}. Use one of {sorted(PRESETS)} or 'none'.")
-        cfg.update(deepcopy(PRESETS[chosen]))
+        cfg.update(deepcopy(PRESETS[norm]))
     return resolve_paths(cfg)
 
 
