@@ -226,6 +226,14 @@ BASE = {
     "constellation_sigma_px": 70.0,    # Gaussian spatial prior std in resized 644x644 pixels (~5 patches)
     "constellation_min_scale": 0.25,   # minimum accepted zoom ratio between target and source object
     "constellation_max_scale": 4.0,    # maximum accepted zoom ratio between target and source object
+    # 3. Two-stage object-centric zoom at inference (src/models/zoom.py):
+    #    Stage 1 matches all source_xy context points on the full image; Stage 2 crops around the
+    #    object on both images (+ zoom_margin) and re-matches at full image_size.
+    "object_zoom": False,              # True = enable 2-stage object-centric zoom at inference
+    "zoom_margin": 0.25,               # relative margin around the 5th-95th percentile point box
+    "zoom_min_frac": 0.20,             # minimum crop side as a fraction of the image side
+    "zoom_pct_low": 5.0,               # lower percentile of coarse points (ignores outliers)
+    "zoom_pct_high": 95.0,             # upper percentile of coarse points
 
     # --- Augmentation (train only; source and target images are augmented separately) ---
     "flip_augment": True,              # Lang ft_pair_flip_aug (both images, keeps left/right consistent)
@@ -277,7 +285,7 @@ BASE = {
 # values: BASE may have a switch on for a new experiment while an old run is evaluated or resumed.
 V3_OFF = {
     "pair_batch": False, "hard_neg_weight": 1.0, "ema_decay": 0.0, "fusion": "none",
-    "cross_transform": False, "constellation_align": False,
+    "cross_transform": False, "constellation_align": False, "object_zoom": False,
 }
 
 # v2 values of the training, augmentation and fusion keys that D-008 changed. BASE updated with these = the v2 training
@@ -288,7 +296,7 @@ V2_TRAINING = {
     "pair_batch": False, "hard_neg_weight": 1.0, "ema_decay": 0.0, "label_jitter": 0.5,
     "aug_rotation_deg": 15.0, "aug_color_jitter": 0.3, "aug_hue_jitter": 0.05, "aug_color_prob": 0.8,
     "aug_grayscale_prob": 0.1, "aug_crop_scale": [0.7, 1.0], "aug_blur_prob": 0.1, "fusion": "none",
-    "cross_transform": False, "constellation_align": False,
+    "cross_transform": False, "constellation_align": False, "object_zoom": False,
 }
 
 

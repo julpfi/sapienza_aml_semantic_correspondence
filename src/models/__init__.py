@@ -84,6 +84,10 @@ class CorrespondenceModel(nn.Module):
     def predict(self, sample, cfg=None, cache=None):
         """Return (pred_xy [2] in original target pixels, used_flip) for one sample."""
         cfg = cfg or self.cfg
+        if cfg.get("object_zoom"):
+            from src.models.zoom import predict_with_zoom
+
+            return predict_with_zoom(self, sample, cfg, cache=cache)
         src_feats = self.image_features(sample["src_img"], cache=cache, key=sample["src_image"])
         trg_feats = self.image_features(sample["trg_img"], cache=cache, key=sample["trg_image"])
         src_feats, trg_raw = self.pair_features(src_feats, trg_feats)

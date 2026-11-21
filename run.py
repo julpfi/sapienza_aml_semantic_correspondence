@@ -31,6 +31,10 @@ def parse_args(argv=None):
     parser.add_argument("--run", metavar="RUN_ID", help="evaluate/submit: use this run's config and best.pt")
     parser.add_argument("--require-gpu", action="store_true", help="Stop if no CUDA GPU is available")
     parser.add_argument("--dry-run", action="store_true", help="Print the settings and check the files only")
+    parser.add_argument("--object-zoom", action=argparse.BooleanOptionalAction, default=None,
+                        help="Override cfg['object_zoom'] for evaluate/submit")
+    parser.add_argument("--constellation-align", action=argparse.BooleanOptionalAction, default=None,
+                        help="Override cfg['constellation_align'] for evaluate/submit")
     args = parser.parse_args(argv)
 
     if args.resume and args.mode != "train":
@@ -48,9 +52,14 @@ def load_config(args):
         cfg = load_run_config(run_id, cfg["output_dir"])
         if cfg.get("git_commit") not in (None, git_commit()):
             print(f"Note: run {run_id} started on {cfg['git_commit']}, code is now {git_commit()}.")
-        return cfg, run_id
-    cfg["git_commit"] = git_commit()
-    return cfg, None
+    else:
+        cfg["git_commit"] = git_commit()
+        run_id = None
+    if args.object_zoom is not None:
+        cfg["object_zoom"] = args.object_zoom
+    if args.constellation_align is not None:
+        cfg["constellation_align"] = args.constellation_align
+    return cfg, run_id
 
 
 def preflight(cfg, args):

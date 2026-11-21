@@ -61,6 +61,12 @@ def _score_setting(fcfg, model, dataset, matching, cache, verbose):
             feats, flipped = (flipped_src, did_flip) if setting["flip_test"] else (src, False)
             trg_used = trg_flip if flipped else trg_raw
             for s in samples:
+                if ccfg.get("object_zoom"):
+                    from src.models.zoom import predict_with_zoom
+
+                    pred, used_flip = predict_with_zoom(model, s, ccfg, cache=cache)
+                    meters[i].update(s, pred, used_flip)
+                    continue
                 if ccfg.get("constellation_align"):
                     from src.models.constellation import load_pair_source_xy, predict_with_constellation
 
