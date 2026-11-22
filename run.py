@@ -44,26 +44,22 @@ def parse_args(argv=None):
     parser.add_argument("--cross-transform", action=argparse.BooleanOptionalAction, default=None,
                         help="Override cfg['cross_transform'] for new runs")
     parser.add_argument("--fusion", default=None, help="Override cfg['fusion'] for new runs")
+    parser.add_argument("--ensemble", default=None,
+                        help="Comma-separated run IDs to ensemble in similarity space (evaluate/submit)")
+    parser.add_argument("--ensemble-weights", default=None,
+                        help="Comma-separated weights for --ensemble (default: equal)")
     args = parser.parse_args(argv)
 
     if args.resume and args.mode != "train":
         parser.error("--resume is only for --mode train (use --run for the other modes).")
     if args.run and args.mode == "train":
         parser.error("--run is for evaluate/submit; continue training with --resume.")
+    if args.ensemble and args.mode == "train":
+        parser.error("--ensemble is only for evaluate/submit.")
     return args
 
 
-def load_config(args):
-    """The config of a new run (BASE), or the saved config of an existing run."""
-    cfg = get_config(preset=None if (args.resume or args.run) else args.preset)
-    run_id = args.resume or args.run
-    if run_id:
-        cfg = load_run_config(run_id, cfg["output_dir"])
-        if cfg.get("git_commit") not in (None, git_commit()):
-            print(f"Note: run {run_id} started on {cfg['git_commit']}, code is now {git_commit()}.")
-    else:
-        cfg["git_commit"] = git_commit()
-        run_id = None
+def _apply_cli_overrides(cfg, args):
     for attr, key in (("image_size", "image_size"), ("soft_window", "soft_window"),
                       ("soft_temperature", "soft_temperature"), ("flip_test", "flip_test"),
                       ("object_zoom", "object_zoom"), ("constellation_align", "constellation_align"),
@@ -71,7 +67,30 @@ def load_config(args):
         val = getattr(args, attr)
         if val is not None:
             cfg[key] = val
-    return cfg, run_id
+    return cfg
+
+
+def load_config(args):
+    """The config of a new run (BASE), or the saved config of an existing run."""
+    cfg = get_config(preset=None if (args.resume or args.run or args.ensemble) else args.preset)
+    run_id = args.resume or args.run
+    if args.ensemble:
+        run_ids = [r.strip() for r in args.ensemble.split(",") if r.strip()]
+        if run_id and run_id not in run_ids:
+            run_ids = [run_id, *run_ids]
+        cfg = load_run_config(run_ids[0], cfg["output_dir"])
+        cfg["ensemble_runs"] = run_ids
+        if args.ensemble_weights:
+            cfg["ensemble_weights"] = [float(x) for x in args.ensemble_weights.split(",")]
+        return _apply_cli_overrides(cfg, args), None
+    if run_id:
+        cfg = load_run_config(run_id, cfg["output_dir"])
+        if cfg.get("git_commit") not in (None, git_commit()):
+            print(f"Note: run {run_id} started on {cfg['git_commit']}, code is now {git_commit()}.")
+    else:
+        cfg["git_commit"] = git_commit()
+        run_id = None
+    return _apply_cli_overrides(cfg, args), run_id
 
 
 def preflight(cfg, args):
@@ -122,7 +141,18 @@ def main(argv=None):
     seed_everything(cfg["seed"], cfg["deterministic"])
     run_id, run_dir = prepare_run_dir(cfg, run_id, args.mode)
     print(f"Run {run_id} -> {run_dir} (settings in config.json)")
-    model = build_model(cfg, device)
+    if args.ensemble:
+        from src.models.ensemble import EnsembleModel
+        from src.utils.run import run_dir_for
+
+        members = []
+        for member_id in cfg["ensemble_runs"]:
+            mcfg = _apply_cli_overrides(load_run_config(member_id, cfg["output_dir"]), args)
+            m = load_trained_weights(mcfg, build_model(mcfg, device), run_dir_for(cfg, member_id)).eval()
+            members.append(m)
+        model = EnsembleModel(members, cfg, weights=cfg.get("ensemble_weights"))
+    else:
+        model = build_model(cfg, device)
 
     if args.mode == "train":
         from src.train import train
@@ -132,7 +162,7 @@ def main(argv=None):
         print(f"{score}. Checkpoints in {run_dir / 'checkpoints'}")
         return 0
 
-    if args.run:
+    if args.run and not args.ensemble:
         model = load_trained_weights(cfg, model, run_dir)
 
     if args.mode == "evaluate":
@@ -144,10 +174,10 @@ def main(argv=None):
 
         # One cache for evaluate and the sweep: the sweep reuses the features of the current setting.
         cache = FeatureCache(max(cfg["feature_cache_size"], 4096))
-        summary, meter = evaluate(cfg, model, run_dir, cache=cache)
+        summary, meter = evaluate(cfg, model, run_dir, with_loss=not args.ensemble, cache=cache)
         print(meter.per_group().to_string(index=False))
         print(meter.error_types().to_string())
-        sweep = run_sweep(cfg, model, device, cache=cache)
+        sweep = None if args.ensemble else run_sweep(cfg, model, device, cache=cache)
         if sweep is not None:
             sweep.to_csv(run_dir / "sweep.csv", index=False)
             print(describe(sweep, cfg))
