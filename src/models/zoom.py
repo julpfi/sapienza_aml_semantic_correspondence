@@ -21,7 +21,7 @@ from src.models.constellation import load_pair_source_xy, predict_with_constella
 from src.models.matching import cell_centers, choose_source, locate, predict_from_features, sample_point_features
 
 
-def bbox_crop(img, pts, margin=0.35, min_frac=0.20, pct_low=5.0, pct_high=95.0, max_area=0.75):
+def bbox_crop(img, pts, margin=0.25, min_frac=0.20, pct_low=5.0, pct_high=95.0, max_area=1.0):
     """Crop `img` around the percentile bounding box of `pts` [K, 2] with a relative margin.
     Returns (cropped_pil_img, (x0, y0, x1, y1)); keeps full image if box covers > max_area."""
     w, h = img.size
@@ -107,7 +107,7 @@ def predict_with_zoom(model, sample, cfg, cache=None):
     else:
         ctx_xy = load_pair_source_xy(cfg, sample["pair_id"], fallback_xy=sample["src_xy"][None])
         coarse_ctx = predict_from_features(src_chosen, trg_chosen, ctx_xy, src_wh, trg_wh, cfg, flipped)
-        max_area = float(cfg.get("zoom_max_area", 0.75))
+        max_area = float(cfg.get("zoom_max_area", 1.0))
         s_crop, sbox = bbox_crop(sample["src_img"], ctx_xy, cfg["zoom_margin"], cfg["zoom_min_frac"],
                                  cfg["zoom_pct_low"], cfg["zoom_pct_high"], max_area=max_area)
         t_crop, tbox = bbox_crop(sample["trg_img"], coarse_ctx, cfg["zoom_margin"], cfg["zoom_min_frac"],
@@ -142,7 +142,7 @@ def predict_with_zoom(model, sample, cfg, cache=None):
         return pred + np.array(tbox[:2], dtype=np.float32), flipped
 
     sim2 = _similarity_map(fs2, ft2, q_in[None], sc_wh, cfg, flipped)
-    w1 = float(cfg.get("zoom_stage1_weight", 0.35))
+    w1 = float(cfg.get("zoom_stage1_weight", 0.0))
     is_full = (sbox == (0, 0, src_wh[0], src_wh[1])) and (tbox == (0, 0, trg_wh[0], trg_wh[1]))
     if not is_full and w1 > 0.0:
         sim1 = _similarity_map(src_chosen, trg_chosen, sample["src_xy"][None], src_wh, cfg, flipped)
