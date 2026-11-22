@@ -83,6 +83,9 @@ BASE = {
     "sample_submission_csv": "sample_submission.csv",
     "official_metric_py": "metric.py",  # used for evaluation when present in data_dir
     "val_split_file": "val_pair_ids.json",  # relative to splits_dir
+    "val_folds_file": "val_disjoint_folds.json",  # image-disjoint connected-component folds (splits_dir)
+    "val_fold": None,                  # None = legacy val_pair_ids.json; 0..val_n_folds-1 = image-disjoint fold
+    "val_n_folds": 5,                  # number of image-disjoint folds in val_folds_file
 
     # Competition CSV columns -> names used in the code.
     "csv_columns": {
@@ -119,6 +122,7 @@ BASE = {
     "model_id": "facebook/dinov2-base",
     "model_revision": "f9e44c814b77203eaa57a6bdbbd535f21ede1415",  # pinned commit on the Hub
     "feature_layer": -1,               # transformer block to read (-1 = last); Lang `layer`
+    "feature_layers": None,            # None = single feature_layer; e.g. [-3, -1] = L2-norm concat of multiple blocks
     "pos_embed_interp": "hub",         # "hub" = torch.hub interpolation (Lang results), "hf" = transformers default
     "pos_embed_interp_offset": 0.1,    # torch.hub DINOv2 value (models without registers)
     "image_size": 644,                 # square input; multiple of the patch size (14). Lang submission: 644
@@ -135,6 +139,8 @@ BASE = {
     "soft_window": 11,                 # window side in (upsampled) cells (v2: 9; 11 / T 0.02 measured better on run 1)
     "soft_temperature": 0.02,          # v2: 0.04
     "feat_upsample": 2,                # bilinear upsampling of the target feature map
+    "csls_weight": 0.0,                # >0 subtracts CSLS hubness baseline (top-k mean src sim per trg cell)
+    "csls_k": 10,                      # number of top source patches averaged for CSLS hubness
     "flip_test": False,                # try a mirrored source and keep the better global alignment
     "feature_cache_size": 256,         # images kept in memory during inference
     "cache_features_to_disk": False,   # frozen mode only: store backbone features in features_dir
@@ -169,6 +175,7 @@ BASE = {
     "marginal_radius": 1.0,            # marginal: positive cells within this many cells of a target (Lang: 1.0)
     "loss_upsample": 1,                # >1 upsamples trg_feats before loss (2 = 92x92, eliminates 0-cell queries)
     "adaptive_pos_radius": False,      # True = cap marginal positive radius at 0.08 * object_size_in_cells
+    "bidirectional_loss_weight": 0.0,  # >0 adds reverse trg->src marginal loss on single-target queries (pair_batch)
     "checkpoint_every_steps": 0,       # last.pt every N updates; 0 = end of epoch only (fewer Drive writes)
     "val_every_epoch": True,
     # Final submission only: also train on the validation pairs (+22% queries). Validation, best.pt
@@ -283,6 +290,7 @@ V3_OFF = {
     "pair_batch": False, "hard_neg_weight": 1.0, "ema_decay": 0.0, "fusion": "none",
     "cross_transform": False, "object_zoom": False,
     "loss_upsample": 1, "adaptive_pos_radius": False, "lora_train_layernorm": False,
+    "val_fold": None, "feature_layers": None, "csls_weight": 0.0, "bidirectional_loss_weight": 0.0,
 }
 
 # v2 values of the training, augmentation and fusion keys that D-008 changed. BASE updated with these = the v2 training
@@ -295,6 +303,7 @@ V2_TRAINING = {
     "aug_grayscale_prob": 0.1, "aug_crop_scale": [0.7, 1.0], "aug_blur_prob": 0.1, "fusion": "none",
     "cross_transform": False, "object_zoom": False,
     "loss_upsample": 1, "adaptive_pos_radius": False, "lora_train_layernorm": False,
+    "val_fold": None, "feature_layers": None, "csls_weight": 0.0, "bidirectional_loss_weight": 0.0,
 }
 
 # Unified winners preset: lorav2 attention+MLP LoRA (less overfitting on unseen test images) +
@@ -325,8 +334,23 @@ UNIFIED_LORA = {
     "fusion": "none",
 }
 
+# v2 of UNIFIED_LORA: preserves the 0.64851 recipe and adds:
+# 1. Image-disjoint 5-fold validation (0% image leakage between train and val)
+# 2. Multi-layer DINOv2 readout (blocks -3 and -1 concatenated, 1536-d) + CSLS hubness suppression
+# 3. Bidirectional trg->src marginal loss on single-target queries
+UNIFIED_LORA_V2 = {
+    **UNIFIED_LORA,
+    "val_fold": 0,
+    "max_val_queries": 0,
+    "feature_layers": [-3, -1],
+    "csls_weight": 0.5,
+    "csls_k": 10,
+    "bidirectional_loss_weight": 0.5,
+}
+
 PRESETS = {
     "unified_lora": UNIFIED_LORA,
+    "unified_lora_v2": UNIFIED_LORA_V2,
 }
 ACTIVE_PRESET = None
 

@@ -54,6 +54,8 @@ class DinoBackbone(nn.Module):
         from transformers import AutoModel
 
         self.feature_layer = cfg["feature_layer"]
+        layers = cfg.get("feature_layers")
+        self.feature_layers = [int(i) for i in layers] if layers else None
         local_dir = local_model_dir(cfg)
         attn = {"attn_implementation": cfg["attn_implementation"]} if cfg.get("attn_implementation") else {}
         if local_dir.is_dir():
@@ -61,6 +63,7 @@ class DinoBackbone(nn.Module):
         else:
             self.model = AutoModel.from_pretrained(cfg["model_id"], revision=cfg["model_revision"], **attn)
         config = self.model.config
+        self.out_dim = config.hidden_size * (len(self.feature_layers) if self.feature_layers else 1)
         self.patch_size = config.patch_size
         self.num_registers = int(getattr(config, "num_register_tokens", 0) or 0)
         self.num_prefix = 1 + self.num_registers
@@ -120,6 +123,14 @@ class DinoBackbone(nn.Module):
 
     def forward(self, x):
         size = x.shape[-1] // self.patch_size
+        if self.feature_layers:
+            hidden = self.model(pixel_values=x, output_hidden_states=True).hidden_states
+            maps = []
+            for idx in self.feature_layers:
+                tok = self.layernorm(hidden[idx])[:, self.num_prefix:, :]
+                f = tok.transpose(1, 2).reshape(x.shape[0], -1, size, size)
+                maps.append(F.normalize(f, dim=1))
+            return F.normalize(torch.cat(maps, dim=1), dim=1)
         tokens = self.tokens(x)[:, self.num_prefix:, :]
         feats = tokens.transpose(1, 2).reshape(x.shape[0], -1, size, size)
         return F.normalize(feats, dim=1)

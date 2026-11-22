@@ -218,6 +218,7 @@ def pair_batch_loss(model, items, cfg, store, train=True, temperature=None):
     src_feats, trg_feats = compute_features(model, items, cfg, store)
     size, w = cfg["image_size"], trg_feats.shape[-1]
     hard = cfg["hard_neg_weight"] > 1
+    bi_w = float(cfg.get("bidirectional_loss_weight", 0.0))
     stats, n_negatives = [], []
     for b, item in enumerate(items):
         trg = [to_resized(xys, item["trg_img"].size, size) for xys in item["trg_xys"]]
@@ -226,6 +227,17 @@ def pair_batch_loss(model, items, cfg, store, train=True, temperature=None):
         item_stats, item_negatives = pair_matching_loss(src_feats[b], trg_feats[b], src, own, cfg, temperature,
                                                         neg_xys_resized=trg, return_negatives=True,
                                                         scales_px=item.get("scale"), trg_wh=item["trg_img"].size)
+        if train and bi_w > 0.0:
+            single_idx = [k for k, t in enumerate(trg) if len(t) == 1]
+            if single_idx:
+                rev_queries = torch.cat([trg[k] for k in single_idx], dim=0)
+                rev_neg = [src[k : k + 1] for k in single_idx]
+                rev_own = [jitter_labels(t, size, w, cfg["label_jitter"]) for t in rev_neg]
+                rev_stats = pair_matching_loss(trg_feats[b], src_feats[b], rev_queries, rev_own, cfg, temperature,
+                                               neg_xys_resized=rev_neg)
+                idx_t = torch.tensor(single_idx, device=item_stats[0].device, dtype=torch.long)
+                fwd_loss = item_stats[0].index_add(0, idx_t, bi_w * rev_stats[0])
+                item_stats = (fwd_loss, item_stats[1], item_stats[2])
         stats.append(item_stats)
         if hard:
             n_negatives.append(item_negatives)

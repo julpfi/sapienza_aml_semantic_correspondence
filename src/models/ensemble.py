@@ -14,9 +14,9 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 from data.datasets import load_pair_source_xy
-from data.transforms import to_original, to_resized
-from src.models.matching import choose_source, locate, sample_point_features
-from src.models.zoom import _sample_stage1_into_crop, _upsample_trg, bbox_crop
+from data.transforms import to_original
+from src.models.matching import choose_source, compute_similarity_map, locate
+from src.models.zoom import _sample_stage1_into_crop, bbox_crop
 
 
 class EnsembleModel(nn.Module):
@@ -44,14 +44,8 @@ class EnsembleModel(nn.Module):
         return self.models[0].image_features(img, flip=flip, cache=cache, key=(0, key))
 
     def _model_sim_maps(self, idx, src_feats, trg_feats, pts_orig, src_wh, cfg, flipped=False):
-        """[K, H, W] cosine similarity maps for points [K, 2] on one member model."""
-        size = int(cfg["image_size"])
-        xy = to_resized(pts_orig, src_wh, size).to(src_feats.device)
-        if flipped:
-            xy[:, 0] = size - xy[:, 0]
-        q = sample_point_features(src_feats, xy, size)  # [K, C]
-        up_trg = _upsample_trg(trg_feats, cfg)
-        return torch.einsum("kc,chw->khw", q, up_trg)
+        """[K, H, W] (optionally CSLS-adjusted) cosine similarity maps for points [K, 2] on one member model."""
+        return compute_similarity_map(src_feats, trg_feats, pts_orig, src_wh, cfg, flipped)
 
     def _combine_sims(self, sims):
         """Weighted average of [K, H_i, W_i] similarity maps (resizing if grids differ)."""

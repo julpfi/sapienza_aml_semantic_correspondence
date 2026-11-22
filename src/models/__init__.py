@@ -21,7 +21,7 @@ class CorrespondenceModel(nn.Module):
         self.backbone = DinoBackbone(cfg)
         if cfg["train_mode"] == "lora":
             apply_lora(self.backbone, cfg)
-        in_dim = self.backbone.model.config.hidden_size
+        in_dim = self.backbone.out_dim
         out_dim = in_dim if cfg["head"] == "none" or cfg.get("head_dim") is None else cfg["head_dim"]
         self.head = ProjectionHead(cfg["head"], in_dim, out_dim)
         # Imported only here, so fusion "none" never imports diffusers and keeps the v2 state-dict keys.

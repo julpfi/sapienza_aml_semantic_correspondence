@@ -17,8 +17,8 @@ import torch
 import torch.nn.functional as F
 
 from data.datasets import load_pair_source_xy
-from data.transforms import to_original, to_resized
-from src.models.matching import cell_centers, choose_source, locate, predict_from_features, sample_point_features
+from data.transforms import to_original
+from src.models.matching import cell_centers, choose_source, compute_similarity_map, locate, predict_from_features
 
 
 def bbox_crop(img, pts, margin=0.25, min_frac=0.20, pct_low=5.0, pct_high=95.0, max_area=1.0):
@@ -52,14 +52,8 @@ def _upsample_trg(trg_feats, cfg):
 
 
 def _similarity_map(src_feats, trg_feats, src_xy, src_wh, cfg, flipped=False):
-    """Compute [1, H, W] cosine similarity map for one source point [1, 2] in original pixels."""
-    size = cfg["image_size"]
-    xy = to_resized(src_xy, src_wh, size).to(src_feats.device)
-    if flipped:
-        xy[:, 0] = size - xy[:, 0]
-    query = sample_point_features(src_feats, xy, size)  # [1, C]
-    up_trg = _upsample_trg(trg_feats, cfg)
-    return torch.einsum("kc,chw->khw", query, up_trg)
+    """Compute [1, H, W] (optionally CSLS-adjusted) cosine similarity map for one source point [1, 2]."""
+    return compute_similarity_map(src_feats, trg_feats, src_xy, src_wh, cfg, flipped)
 
 
 def _sample_stage1_into_crop(sim1, tbox, trg_wh, crop_hw, size):

@@ -61,18 +61,42 @@ def choose_source(src_feats, src_flip_feats, trg_feats):
     return src_feats, False
 
 
-def predict_from_features(src_feats, trg_feats, src_xy, src_wh, trg_wh, cfg, flipped=False):
-    """src_xy [K, 2] in original source pixels -> predicted [K, 2] in original target pixels."""
-    size = cfg["image_size"]
+def csls_hubness(src_feats, trg_feats, k=10):
+    """Mean top-k source similarity for each target cell [h_t, w_t] (CSLS hubness baseline)."""
+    _, h_t, w_t = trg_feats.shape
+    s_flat = src_feats.flatten(1).T  # [N_s, C]
+    t_flat = trg_feats.flatten(1)    # [C, N_t]
+    k_eff = max(1, min(int(k), s_flat.shape[0]))
+    sim_all = s_flat @ t_flat        # [N_s, N_t]
+    return sim_all.topk(k_eff, dim=0).values.mean(0).reshape(h_t, w_t)
+
+
+def compute_similarity_map(src_feats, trg_feats, src_xy, src_wh, cfg, flipped=False):
+    """Compute [K, H, W] cosine similarity maps (with optional CSLS hubness suppression)."""
+    size = int(cfg["image_size"])
     xy = to_resized(src_xy, src_wh, size).to(src_feats.device)
     if flipped:
         xy[:, 0] = size - xy[:, 0]
     query = sample_point_features(src_feats, xy, size)  # [K, C]
+    up_trg = trg_feats
     if cfg["feat_upsample"] > 1:
-        trg_feats = F.interpolate(trg_feats[None], scale_factor=cfg["feat_upsample"],
-                                  mode="bilinear", align_corners=False)[0]
-        trg_feats = F.normalize(trg_feats, dim=0)
-    sim = torch.einsum("kc,chw->khw", query, trg_feats)
+        up_trg = F.interpolate(trg_feats[None], scale_factor=cfg["feat_upsample"],
+                               mode="bilinear", align_corners=False)[0]
+        up_trg = F.normalize(up_trg, dim=0)
+    sim = torch.einsum("kc,chw->khw", query, up_trg)
+    w_csls = float(cfg.get("csls_weight", 0.0))
+    if w_csls > 0.0:
+        hub = csls_hubness(src_feats, trg_feats, k=cfg.get("csls_k", 10))
+        if hub.shape != sim.shape[-2:]:
+            hub = F.interpolate(hub[None, None], size=sim.shape[-2:], mode="bilinear", align_corners=False)[0, 0]
+        sim = sim - w_csls * hub[None]
+    return sim
+
+
+def predict_from_features(src_feats, trg_feats, src_xy, src_wh, trg_wh, cfg, flipped=False):
+    """src_xy [K, 2] in original source pixels -> predicted [K, 2] in original target pixels."""
+    size = cfg["image_size"]
+    sim = compute_similarity_map(src_feats, trg_feats, src_xy, src_wh, cfg, flipped)
     pred = locate(sim, size, cfg["matcher"], cfg["soft_window"], cfg["soft_temperature"])
     return to_original(pred.cpu(), trg_wh, size).numpy()
 
