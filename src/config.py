@@ -336,14 +336,15 @@ UNIFIED_LORA = {
 
 # v2 of UNIFIED_LORA: preserves the 0.64851 recipe and adds:
 # 1. Image-disjoint 5-fold validation (0% image leakage between train and val)
-# 2. Multi-layer DINOv2 readout (blocks -3 and -1 concatenated, 1536-d) + CSLS hubness suppression
+# 2. Multi-layer DINOv2 readout (blocks -3 and -1 concatenated, 1536-d)
 # 3. Bidirectional trg->src marginal loss on single-target queries
+# (CSLS disabled: top-k hubness on dense zoomed maps penalized foreground object peaks by -4.6 pts)
 UNIFIED_LORA_V2 = {
     **UNIFIED_LORA,
     "val_fold": 0,
     "max_val_queries": 0,
     "feature_layers": [-3, -1],
-    "csls_weight": 0.5,
+    "csls_weight": 0.0,
     "csls_k": 10,
     "bidirectional_loss_weight": 0.5,
 }
