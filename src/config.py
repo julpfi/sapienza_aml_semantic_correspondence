@@ -333,7 +333,7 @@ UNIFIED_LORA = {
     "hard_neg_weight": 5.0,
     "aug_rotation_deg": 25.0,
     "aug_crop_scale": [0.45, 1.0],
-    "letterbox": True,
+    "letterbox": False,
     "cross_transform": False,
     "constellation_align": False,
     "object_zoom": True,
