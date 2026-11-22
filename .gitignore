@@ -242,5 +242,6 @@ aml-challenge-2026-27/
 inspect_samples_kaggle.ipynb
 inspect_transformations.ipynb
 colab/inspect_errors.ipynb
+IDEAS_AND_GAPS.md
 analysis_report/
 *.pdf
