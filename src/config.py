@@ -234,8 +234,10 @@ BASE = {
     #    Stage 1 matches all source_xy context points on the full image; Stage 2 crops around the
     #    object on both images (+ zoom_margin) and re-matches at full image_size.
     "object_zoom": False,              # True = enable 2-stage object-centric zoom at inference
-    "zoom_margin": 0.25,               # relative margin around the 5th-95th percentile point box
+    "zoom_margin": 0.35,               # relative margin around the 5th-95th percentile point box
     "zoom_min_frac": 0.20,             # minimum crop side as a fraction of the image side
+    "zoom_max_area": 0.75,             # skip cropping a side whose box already covers > this fraction
+    "zoom_stage1_weight": 0.35,        # blend weight of Stage-1 full-image similarity into Stage-2 crop
     "zoom_pct_low": 5.0,               # lower percentile of coarse points (ignores outliers)
     "zoom_pct_high": 95.0,             # upper percentile of coarse points
 
