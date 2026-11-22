@@ -97,13 +97,6 @@ class CorrespondenceModel(nn.Module):
             src_flip, trg_flip = self.pair_features(src_flip_base, trg_feats)
         src_chosen, flipped = choose_source(src_feats, src_flip, trg_raw)
         trg_chosen = trg_flip if flipped else trg_raw
-        if cfg.get("constellation_align"):
-            from src.models.constellation import load_pair_source_xy, predict_with_constellation
-
-            ctx_xy = load_pair_source_xy(cfg, sample["pair_id"], fallback_xy=sample["src_xy"][None])
-            pred, _ = predict_with_constellation(src_chosen, trg_chosen, sample["src_xy"][None], ctx_xy,
-                                                 sample["src_img"].size, sample["trg_img"].size, cfg, flipped)
-            return pred[0], flipped
         pred = predict_from_features(src_chosen, trg_chosen, sample["src_xy"][None], sample["src_img"].size,
                                      sample["trg_img"].size, cfg, flipped)
         return pred[0], flipped

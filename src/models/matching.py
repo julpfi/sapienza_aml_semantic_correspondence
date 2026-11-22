@@ -63,8 +63,8 @@ def choose_source(src_feats, src_flip_feats, trg_feats):
 
 def predict_from_features(src_feats, trg_feats, src_xy, src_wh, trg_wh, cfg, flipped=False):
     """src_xy [K, 2] in original source pixels -> predicted [K, 2] in original target pixels."""
-    size, lb = cfg["image_size"], bool(cfg.get("letterbox", False))
-    xy = to_resized(src_xy, src_wh, size, letterbox=lb).to(src_feats.device)
+    size = cfg["image_size"]
+    xy = to_resized(src_xy, src_wh, size).to(src_feats.device)
     if flipped:
         xy[:, 0] = size - xy[:, 0]
     query = sample_point_features(src_feats, xy, size)  # [K, C]
@@ -74,7 +74,7 @@ def predict_from_features(src_feats, trg_feats, src_xy, src_wh, trg_wh, cfg, fli
         trg_feats = F.normalize(trg_feats, dim=0)
     sim = torch.einsum("kc,chw->khw", query, trg_feats)
     pred = locate(sim, size, cfg["matcher"], cfg["soft_window"], cfg["soft_temperature"])
-    return to_original(pred.cpu(), trg_wh, size, letterbox=lb).numpy()
+    return to_original(pred.cpu(), trg_wh, size).numpy()
 
 
 class FeatureCache:

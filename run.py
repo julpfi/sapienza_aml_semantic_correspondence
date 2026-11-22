@@ -39,12 +39,8 @@ def parse_args(argv=None):
                         help="Override cfg['flip_test'] for evaluate/submit")
     parser.add_argument("--object-zoom", action=argparse.BooleanOptionalAction, default=None,
                         help="Override cfg['object_zoom'] for evaluate/submit")
-    parser.add_argument("--constellation-align", action=argparse.BooleanOptionalAction, default=None,
-                        help="Override cfg['constellation_align'] for evaluate/submit")
     parser.add_argument("--cross-transform", action=argparse.BooleanOptionalAction, default=None,
                         help="Override cfg['cross_transform'] for new runs")
-    parser.add_argument("--letterbox", action=argparse.BooleanOptionalAction, default=None,
-                        help="Override cfg['letterbox'] (aspect-preserving resize + center-pad)")
     parser.add_argument("--fusion", default=None, help="Override cfg['fusion'] for new runs")
     parser.add_argument("--ensemble", default=None,
                         help="Comma-separated run IDs to ensemble in similarity space (evaluate/submit)")
@@ -64,8 +60,7 @@ def parse_args(argv=None):
 def _apply_cli_overrides(cfg, args):
     for attr, key in (("image_size", "image_size"), ("soft_window", "soft_window"),
                       ("soft_temperature", "soft_temperature"), ("flip_test", "flip_test"),
-                      ("object_zoom", "object_zoom"), ("constellation_align", "constellation_align"),
-                      ("cross_transform", "cross_transform"), ("letterbox", "letterbox"), ("fusion", "fusion")):
+                      ("object_zoom", "object_zoom"), ("cross_transform", "cross_transform"), ("fusion", "fusion")):
         val = getattr(args, attr)
         if val is not None:
             cfg[key] = val

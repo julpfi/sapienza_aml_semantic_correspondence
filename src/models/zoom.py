@@ -16,8 +16,8 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
+from data.datasets import load_pair_source_xy
 from data.transforms import to_original, to_resized
-from src.models.constellation import load_pair_source_xy, predict_with_constellation
 from src.models.matching import cell_centers, choose_source, locate, predict_from_features, sample_point_features
 
 
@@ -53,8 +53,8 @@ def _upsample_trg(trg_feats, cfg):
 
 def _similarity_map(src_feats, trg_feats, src_xy, src_wh, cfg, flipped=False):
     """Compute [1, H, W] cosine similarity map for one source point [1, 2] in original pixels."""
-    size, lb = cfg["image_size"], bool(cfg.get("letterbox", False))
-    xy = to_resized(src_xy, src_wh, size, letterbox=lb).to(src_feats.device)
+    size = cfg["image_size"]
+    xy = to_resized(src_xy, src_wh, size).to(src_feats.device)
     if flipped:
         xy[:, 0] = size - xy[:, 0]
     query = sample_point_features(src_feats, xy, size)  # [1, C]
@@ -62,26 +62,16 @@ def _similarity_map(src_feats, trg_feats, src_xy, src_wh, cfg, flipped=False):
     return torch.einsum("kc,chw->khw", query, up_trg)
 
 
-def _sample_stage1_into_crop(sim1, tbox, trg_wh, crop_hw, size, letterbox=False):
+def _sample_stage1_into_crop(sim1, tbox, trg_wh, crop_hw, size):
     """Bilinearly sample Stage-1 full-image similarity [1, H1, W1] onto Stage-2 crop grid [1, H2, W2]."""
-    from data.transforms import letterbox_params
-
     h2, w2 = crop_hw[0], crop_hw[1]
     tc_wh = (tbox[2] - tbox[0], tbox[3] - tbox[1])
     cx_crop = cell_centers(w2, size, sim1.device)
     cy_crop = cell_centers(h2, size, sim1.device)
-    if letterbox:
-        nw_c, nh_c, px_c, py_c = letterbox_params(tc_wh, size)
-        x_full = (cx_crop - px_c) * (tc_wh[0] / nw_c) + float(tbox[0])
-        y_full = (cy_crop - py_c) * (tc_wh[1] / nh_c) + float(tbox[1])
-        nw_f, nh_f, px_f, py_f = letterbox_params(trg_wh, size)
-        gx = ((x_full * (nw_f / trg_wh[0]) + px_f) / size) * 2.0 - 1.0
-        gy = ((y_full * (nh_f / trg_wh[1]) + py_f) / size) * 2.0 - 1.0
-    else:
-        x_full = cx_crop * (tc_wh[0] / size) + float(tbox[0])
-        y_full = cy_crop * (tc_wh[1] / size) + float(tbox[1])
-        gx = (x_full / float(trg_wh[0])) * 2.0 - 1.0
-        gy = (y_full / float(trg_wh[1])) * 2.0 - 1.0
+    x_full = cx_crop * (tc_wh[0] / size) + float(tbox[0])
+    y_full = cy_crop * (tc_wh[1] / size) + float(tbox[1])
+    gx = (x_full / float(trg_wh[0])) * 2.0 - 1.0
+    gy = (y_full / float(trg_wh[1])) * 2.0 - 1.0
     grid_y, grid_x = torch.meshgrid(gy, gx, indexing="ij")
     grid = torch.stack([grid_x, grid_y], dim=-1)[None]  # [1, H2, W2, 2]
     return F.grid_sample(sim1[None], grid, mode="bilinear", align_corners=False)[0]
@@ -145,24 +135,17 @@ def predict_with_zoom(model, sample, cfg, cache=None):
         pred = predict_from_features(src_chosen, trg_chosen, sample["src_xy"][None], src_wh, trg_wh, cfg, flipped)
         return pred[0], flipped
 
-    if cfg.get("constellation_align"):
-        ctx_in = np.asarray(ctx_xy, dtype=np.float32) - np.array(sbox[:2], dtype=np.float32)
-        keep = (ctx_in[:, 0] >= 0.0) & (ctx_in[:, 0] < sc_wh[0]) & (ctx_in[:, 1] >= 0.0) & (ctx_in[:, 1] < sc_wh[1])
-        ctx_valid = ctx_in[keep] if keep.any() else q_in[None]
-        pred = predict_with_constellation(fs2, ft2, q_in[None], ctx_valid, sc_wh, tc_wh, cfg, flipped)[0][0]
-        return pred + np.array(tbox[:2], dtype=np.float32), flipped
-
     sim2 = _similarity_map(fs2, ft2, q_in[None], sc_wh, cfg, flipped)
-    w1, lb = float(cfg.get("zoom_stage1_weight", 0.0)), bool(cfg.get("letterbox", False))
+    w1 = float(cfg.get("zoom_stage1_weight", 0.0))
     is_full = (sbox == (0, 0, src_wh[0], src_wh[1])) and (tbox == (0, 0, trg_wh[0], trg_wh[1]))
     if not is_full and w1 > 0.0:
         sim1 = _similarity_map(src_chosen, trg_chosen, sample["src_xy"][None], src_wh, cfg, flipped)
         if float(sim1.max()) > float(sim2.max()) + 0.05:
             pred1 = locate(sim1, size, cfg["matcher"], cfg["soft_window"], cfg["soft_temperature"])
-            return to_original(pred1.cpu(), trg_wh, size, letterbox=lb).numpy()[0], flipped
-        sim1_crop = _sample_stage1_into_crop(sim1, tbox, trg_wh, sim2.shape[1:], size, letterbox=lb)
+            return to_original(pred1.cpu(), trg_wh, size).numpy()[0], flipped
+        sim1_crop = _sample_stage1_into_crop(sim1, tbox, trg_wh, sim2.shape[1:], size)
         sim2 = (1.0 - w1) * sim2 + w1 * sim1_crop
 
     pred2 = locate(sim2, size, cfg["matcher"], cfg["soft_window"], cfg["soft_temperature"])
-    pred_xy = to_original(pred2.cpu(), tc_wh, size, letterbox=lb).numpy()[0]
+    pred_xy = to_original(pred2.cpu(), tc_wh, size).numpy()[0]
     return pred_xy + np.array(tbox[:2], dtype=np.float32), flipped

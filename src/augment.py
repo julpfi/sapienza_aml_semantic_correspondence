@@ -23,9 +23,6 @@ from data.transforms import flip_points, flip_sample
 
 def _margins(wh, cfg):
     """aug_edge_margin (resized pixels) in original pixels, per axis."""
-    if cfg.get("letterbox"):
-        m = cfg["aug_edge_margin"] * max(wh[0], wh[1]) / cfg["image_size"]
-        return np.array([m, m])
     return np.array([cfg["aug_edge_margin"] * wh[0] / cfg["image_size"],
                      cfg["aug_edge_margin"] * wh[1] / cfg["image_size"]])
 

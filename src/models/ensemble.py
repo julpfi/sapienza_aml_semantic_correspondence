@@ -5,7 +5,7 @@ averaging their cosine-similarity maps before locate(). When `object_zoom` is Tr
 1. Stage 1 averages all models' similarity maps over `source_xy` context points to pick one
    shared, lower-variance Stage-2 crop box (sbox, tbox).
 2. Stage 2 extracts zoomed crop features for each model on (s_crop, t_crop), averages their
-   Stage-2 similarity maps, and runs locate() (and optional `constellation_align`).
+   Stage-2 similarity maps, and runs locate().
 """
 
 import numpy as np
@@ -13,9 +13,9 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from data.datasets import load_pair_source_xy
 from data.transforms import to_original, to_resized
-from src.models.constellation import apply_similarity_2d, load_pair_source_xy, robust_constellation_fit
-from src.models.matching import cell_centers, choose_source, locate, sample_point_features
+from src.models.matching import choose_source, locate, sample_point_features
 from src.models.zoom import _sample_stage1_into_crop, _upsample_trg, bbox_crop
 
 
@@ -45,8 +45,8 @@ class EnsembleModel(nn.Module):
 
     def _model_sim_maps(self, idx, src_feats, trg_feats, pts_orig, src_wh, cfg, flipped=False):
         """[K, H, W] cosine similarity maps for points [K, 2] on one member model."""
-        size, lb = int(cfg["image_size"]), bool(cfg.get("letterbox", False))
-        xy = to_resized(pts_orig, src_wh, size, letterbox=lb).to(src_feats.device)
+        size = int(cfg["image_size"])
+        xy = to_resized(pts_orig, src_wh, size).to(src_feats.device)
         if flipped:
             xy[:, 0] = size - xy[:, 0]
         q = sample_point_features(src_feats, xy, size)  # [K, C]
@@ -87,7 +87,7 @@ class EnsembleModel(nn.Module):
     @torch.no_grad()
     def predict(self, sample, cfg=None, cache=None):
         cfg = cfg or self.cfg
-        size, lb = int(cfg["image_size"]), bool(cfg.get("letterbox", False))
+        size = int(cfg["image_size"])
         src_wh, trg_wh = sample["src_img"].size, sample["trg_img"].size
         stage1_feats, flipped = self._pair_stage_features(
             sample["src_img"], sample["trg_img"], sample["src_image"], sample["trg_image"], cfg, cache
@@ -98,7 +98,7 @@ class EnsembleModel(nn.Module):
                     for i, (sf, tf) in enumerate(stage1_feats)]
             sim = self._combine_sims(sims)
             pred = locate(sim, size, cfg["matcher"], cfg["soft_window"], cfg["soft_temperature"])
-            return to_original(pred.cpu(), trg_wh, size, letterbox=lb).numpy()[0], flipped
+            return to_original(pred.cpu(), trg_wh, size).numpy()[0], flipped
 
         # --- Shared 2-Stage Object-Centric Zoom ---
         pair_key = ("ens_zoom", str(sample["pair_id"]), sample["src_image"], sample["trg_image"], size, bool(flipped))
@@ -111,7 +111,7 @@ class EnsembleModel(nn.Module):
                          for i, (sf, tf) in enumerate(stage1_feats)]
             sim1_ctx = self._combine_sims(sims1_ctx)
             coarse_res = locate(sim1_ctx, size, cfg["matcher"], cfg["soft_window"], cfg["soft_temperature"])
-            coarse_ctx = to_original(coarse_res.cpu(), trg_wh, size, letterbox=lb).numpy()
+            coarse_ctx = to_original(coarse_res.cpu(), trg_wh, size).numpy()
 
             max_area = float(cfg.get("zoom_max_area", 1.0))
             s_crop, sbox = bbox_crop(sample["src_img"], ctx_xy, cfg["zoom_margin"], cfg["zoom_min_frac"],
@@ -143,7 +143,7 @@ class EnsembleModel(nn.Module):
                      for i, (sf, tf) in enumerate(stage1_feats)]
             sim1 = self._combine_sims(sims1)
             pred = locate(sim1, size, cfg["matcher"], cfg["soft_window"], cfg["soft_temperature"])
-            return to_original(pred.cpu(), trg_wh, size, letterbox=lb).numpy()[0], flipped
+            return to_original(pred.cpu(), trg_wh, size).numpy()[0], flipped
 
         sims2 = [self._model_sim_maps(i, sf2, tf2, q_in[None], sc_wh, cfg, flipped)
                  for i, (sf2, tf2) in enumerate(stage2_feats)]
@@ -157,35 +157,10 @@ class EnsembleModel(nn.Module):
             sim1 = self._combine_sims(sims1)
             if float(sim1.max()) > float(sim2.max()) + 0.05:
                 pred1 = locate(sim1, size, cfg["matcher"], cfg["soft_window"], cfg["soft_temperature"])
-                return to_original(pred1.cpu(), trg_wh, size, letterbox=lb).numpy()[0], flipped
-            sim1_crop = _sample_stage1_into_crop(sim1, tbox, trg_wh, sim2.shape[1:], size, letterbox=lb)
+                return to_original(pred1.cpu(), trg_wh, size).numpy()[0], flipped
+            sim1_crop = _sample_stage1_into_crop(sim1, tbox, trg_wh, sim2.shape[1:], size)
             sim2 = (1.0 - w1) * sim2 + w1 * sim1_crop
 
-        if cfg.get("constellation_align"):
-            ctx_in = np.asarray(ctx_xy, dtype=np.float32) - np.array(sbox[:2], dtype=np.float32)
-            keep = (ctx_in[:, 0] >= 0.0) & (ctx_in[:, 0] < sc_wh[0]) & (ctx_in[:, 1] >= 0.0) & (ctx_in[:, 1] < sc_wh[1])
-            ctx_valid = ctx_in[keep] if keep.any() else q_in[None]
-            combined = np.vstack([q_in[None], ctx_valid])
-            sims_all = self._combine_sims([
-                self._model_sim_maps(i, sf2, tf2, combined, sc_wh, cfg, flipped)
-                for i, (sf2, tf2) in enumerate(stage2_feats)
-            ])
-            raw_res = locate(sims_all, size, cfg["matcher"], cfg["soft_window"], cfg["soft_temperature"])
-            conf = sims_all.flatten(1).max(dim=-1).values.detach().cpu().numpy()
-            src_res = to_resized(combined, sc_wh, size, letterbox=lb).numpy()
-            if flipped:
-                src_res[:, 0] = size - src_res[:, 0]
-            transform, _, _ = robust_constellation_fit(src_res, raw_res.detach().cpu().numpy(), conf, size, cfg)
-            prior_weight = float(cfg["constellation_prior_weight"])
-            if transform is not None and prior_weight > 0:
-                exp_res = torch.as_tensor(apply_similarity_2d(src_res[:1], transform), dtype=torch.float32, device=sim2.device)
-                _, h, w = sim2.shape
-                cx, cy = cell_centers(w, size, sim2.device), cell_centers(h, size, sim2.device)
-                sigma = float(cfg["constellation_sigma_px"])
-                bonus = torch.exp(-((cx[None, None, :] - exp_res[:, 0, None, None]) ** 2
-                                    + (cy[None, :, None] - exp_res[:, 1, None, None]) ** 2) / (2.0 * sigma ** 2))
-                sim2 = sim2 + prior_weight * bonus
-
         pred2 = locate(sim2, size, cfg["matcher"], cfg["soft_window"], cfg["soft_temperature"])
-        pred_xy = to_original(pred2.cpu(), tc_wh, size, letterbox=lb).numpy()[0]
+        pred_xy = to_original(pred2.cpu(), tc_wh, size).numpy()[0]
         return pred_xy + np.array(tbox[:2], dtype=np.float32), flipped

@@ -122,7 +122,6 @@ BASE = {
     "pos_embed_interp": "hub",         # "hub" = torch.hub interpolation (Lang results), "hf" = transformers default
     "pos_embed_interp_offset": 0.1,    # torch.hub DINOv2 value (models without registers)
     "image_size": 644,                 # square input; multiple of the patch size (14). Lang submission: 644
-    "letterbox": False,                # True = preserve aspect ratio & center-pad to image_size (removes shear)
     "image_mean": [0.485, 0.456, 0.406],
     "image_std": [0.229, 0.224, 0.225],
     "attn_implementation": "sdpa",     # transformers attention; "sdpa" uses the memory-efficient kernel on a T4
@@ -221,17 +220,7 @@ BASE = {
     "cross_heads": 4,                  # attention heads (cross_dim must be divisible by cross_heads)
     "cross_dropout": 0.05,
     "lr_cross": 3e-4,                  # peak lr of the CrossImageTransform parameter group
-    # 2. Pair-level geometric constellation alignment at inference (src/models/constellation.py):
-    #    uses all source_xy context points of the pair in *_pairs.json to fit a robust 2D similarity
-    #    transform (scale/camera-distance, rotation, flip, translation) and add a spatial prior before locate().
-    "constellation_align": False,      # True = refine predictions with the pair's Sim(2) constellation prior
-    "constellation_min_points": 3,     # minimum context points / inliers required to fit Sim(2)
-    "constellation_inlier_px": 84.0,   # RANSAC inlier threshold in resized 644x644 pixels (~6 patches)
-    "constellation_prior_weight": 0.08,  # weight of the Gaussian prior added to the cosine similarity map
-    "constellation_sigma_px": 70.0,    # Gaussian spatial prior std in resized 644x644 pixels (~5 patches)
-    "constellation_min_scale": 0.25,   # minimum accepted zoom ratio between target and source object
-    "constellation_max_scale": 4.0,    # maximum accepted zoom ratio between target and source object
-    # 3. Two-stage object-centric zoom at inference (src/models/zoom.py):
+    # 2. Two-stage object-centric zoom at inference (src/models/zoom.py):
     #    Stage 1 matches all source_xy context points on the full image; Stage 2 crops around the
     #    object on both images (+ zoom_margin) and re-matches at full image_size.
     "object_zoom": False,              # True = enable 2-stage object-centric zoom at inference
@@ -292,9 +281,8 @@ BASE = {
 # values: BASE may have a switch on for a new experiment while an old run is evaluated or resumed.
 V3_OFF = {
     "pair_batch": False, "hard_neg_weight": 1.0, "ema_decay": 0.0, "fusion": "none",
-    "cross_transform": False, "constellation_align": False, "object_zoom": False,
+    "cross_transform": False, "object_zoom": False,
     "loss_upsample": 1, "adaptive_pos_radius": False, "lora_train_layernorm": False,
-    "letterbox": False,
 }
 
 # v2 values of the training, augmentation and fusion keys that D-008 changed. BASE updated with these = the v2 training
@@ -305,13 +293,12 @@ V2_TRAINING = {
     "pair_batch": False, "hard_neg_weight": 1.0, "ema_decay": 0.0, "label_jitter": 0.5,
     "aug_rotation_deg": 15.0, "aug_color_jitter": 0.3, "aug_hue_jitter": 0.05, "aug_color_prob": 0.8,
     "aug_grayscale_prob": 0.1, "aug_crop_scale": [0.7, 1.0], "aug_blur_prob": 0.1, "fusion": "none",
-    "cross_transform": False, "constellation_align": False, "object_zoom": False,
+    "cross_transform": False, "object_zoom": False,
     "loss_upsample": 1, "adaptive_pos_radius": False, "lora_train_layernorm": False,
-    "letterbox": False,
 }
 
 # Unified winners preset: lorav2 attention+MLP LoRA (less overfitting on unseen test images) +
-# analysis_report 92x92 upsampled loss & scale-adaptive positive radius + aspect-preserving letterbox +
+# analysis_report 92x92 upsampled loss & scale-adaptive positive radius +
 # wider scale/rotation augmentation + 2-stage object-centric zoom at inference.
 UNIFIED_LORA = {
     "train_mode": "lora",
@@ -333,9 +320,7 @@ UNIFIED_LORA = {
     "hard_neg_weight": 5.0,
     "aug_rotation_deg": 25.0,
     "aug_crop_scale": [0.45, 1.0],
-    "letterbox": False,
     "cross_transform": False,
-    "constellation_align": False,
     "object_zoom": True,
     "fusion": "none",
 }

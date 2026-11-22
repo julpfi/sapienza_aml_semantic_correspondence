@@ -199,14 +199,14 @@ def loss_temperature_at(update, ramp_updates, cfg):
 def batch_loss(model, samples, cfg, store, train=True, temperature=None):
     """The LOSS_STATS of src/models/loss.py per sample: three tensors [B], gradients on the first only."""
     src_feats, trg_feats = compute_features(model, samples, cfg, store)
-    size, lb = cfg["image_size"], bool(cfg.get("letterbox", False))
+    size = cfg["image_size"]
     stats = []
     for b, s in enumerate(samples):
-        trg = to_resized(s["trg_xys"], s["trg_img"].size, size, letterbox=lb)
+        trg = to_resized(s["trg_xys"], s["trg_img"].size, size)
         if train:
             trg = jitter_labels(trg, size, trg_feats.shape[-1], cfg["label_jitter"])
         stats.append(matching_loss(src_feats[b], trg_feats[b],
-                                   to_resized(s["src_xy"][None], s["src_img"].size, size, letterbox=lb), trg, cfg,
+                                   to_resized(s["src_xy"][None], s["src_img"].size, size), trg, cfg,
                                    temperature, scale_px=s.get("scale"), trg_wh=s["trg_img"].size))
     return tuple(torch.stack(values) for values in zip(*stats))
 
@@ -216,13 +216,13 @@ def pair_batch_loss(model, items, cfg, store, train=True, temperature=None):
     tensors [total queries] in item order, and the hard-negative cells per query [total queries]
     (None when hard negatives are off). Label jitter moves the own targets only, not the negatives."""
     src_feats, trg_feats = compute_features(model, items, cfg, store)
-    size, lb, w = cfg["image_size"], bool(cfg.get("letterbox", False)), trg_feats.shape[-1]
+    size, w = cfg["image_size"], trg_feats.shape[-1]
     hard = cfg["hard_neg_weight"] > 1
     stats, n_negatives = [], []
     for b, item in enumerate(items):
-        trg = [to_resized(xys, item["trg_img"].size, size, letterbox=lb) for xys in item["trg_xys"]]
+        trg = [to_resized(xys, item["trg_img"].size, size) for xys in item["trg_xys"]]
         own = [jitter_labels(t, size, w, cfg["label_jitter"]) for t in trg] if train else trg
-        src = to_resized(item["src_xys"], item["src_img"].size, size, letterbox=lb)
+        src = to_resized(item["src_xys"], item["src_img"].size, size)
         item_stats, item_negatives = pair_matching_loss(src_feats[b], trg_feats[b], src, own, cfg, temperature,
                                                         neg_xys_resized=trg, return_negatives=True,
                                                         scales_px=item.get("scale"), trg_wh=item["trg_img"].size)
@@ -375,8 +375,7 @@ def train(cfg, model, run_id, run_dir, resume=False):
         wandb_run.summary.update({"micro_batch": micro, "total_updates": total_updates,
                                   "trainable_params_M": n_trainable / 1e6, "probe_peak_gb": probe_peak,
                                   "n_train_queries": n_queries,
-                                  "cross_transform": bool(cfg.get("cross_transform")),
-                                  "constellation_align": bool(cfg.get("constellation_align"))})
+                                  "cross_transform": bool(cfg.get("cross_transform"))})
 
     def save_last(epoch, batches_done, complete):
         save_checkpoint({

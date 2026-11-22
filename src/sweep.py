@@ -67,15 +67,8 @@ def _score_setting(fcfg, model, dataset, matching, cache, verbose):
                     pred, used_flip = predict_with_zoom(model, s, ccfg, cache=cache)
                     meters[i].update(s, pred, used_flip)
                     continue
-                if ccfg.get("constellation_align"):
-                    from src.models.constellation import load_pair_source_xy, predict_with_constellation
-
-                    ctx_xy = load_pair_source_xy(ccfg, s["pair_id"], fallback_xy=s["src_xy"][None])
-                    pred = predict_with_constellation(feats, trg_used, s["src_xy"][None], ctx_xy,
-                                                      s["src_img"].size, s["trg_img"].size, ccfg, flipped)[0][0]
-                else:
-                    pred = predict_from_features(feats, trg_used, s["src_xy"][None], s["src_img"].size,
-                                                 s["trg_img"].size, ccfg, flipped)[0]
+                pred = predict_from_features(feats, trg_used, s["src_xy"][None], s["src_img"].size,
+                                             s["trg_img"].size, ccfg, flipped)[0]
                 meters[i].update(s, pred, flipped)
     return meters
 

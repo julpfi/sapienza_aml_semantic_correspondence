@@ -28,6 +28,30 @@ from data.splits import load_val_pair_ids
 from src.config import data_path
 
 SPLITS = ("train", "val", "test")
+_PAIRS_CACHE = {}
+
+
+def load_pair_source_xy(cfg, pair_id, fallback_xy=None):
+    """Return float32 [K, 2] source_xy for `pair_id` from train_pairs.json or test_pairs.json."""
+    data_dir = str(cfg["data_dir"])
+    if data_dir not in _PAIRS_CACHE:
+        table = {}
+        for key in ("train_pairs_json", "test_pairs_json"):
+            if not cfg.get(key):
+                continue
+            path = data_path(cfg, key)
+            if path.is_file():
+                raw = json.loads(path.read_text())
+                for entry in raw.get("pairs", []):
+                    pts = np.asarray(entry["source_xy"], dtype=np.float32).reshape(-1, 2)
+                    table[str(entry["pair_id"])] = pts
+        _PAIRS_CACHE[data_dir] = table
+    pts = _PAIRS_CACHE[data_dir].get(str(pair_id))
+    if pts is not None and len(pts) > 0:
+        return pts.copy()
+    if fallback_xy is not None:
+        return np.asarray(fallback_xy, dtype=np.float32).reshape(-1, 2)
+    return np.zeros((0, 2), dtype=np.float32)
 
 
 def _open_rgb(path):
