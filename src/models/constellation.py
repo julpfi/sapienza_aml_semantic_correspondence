@@ -158,7 +158,7 @@ def robust_constellation_fit(src_xy, trg_xy, conf, image_size, cfg):
 def predict_with_constellation(src_feats, trg_feats, query_xy, all_src_xy, src_wh, trg_wh, cfg, flipped=False):
     """Predict query_xy [M, 2] using the pair's full constellation `all_src_xy` [K, 2] (in original pixels).
     Returns (pred_xy [M, 2] in original target pixels, info_dict)."""
-    size = cfg["image_size"]
+    size, lb = cfg["image_size"], bool(cfg.get("letterbox", False))
     device = src_feats.device
 
     # Combine query_xy and all_src_xy; keep track of which rows correspond to query_xy
@@ -175,7 +175,7 @@ def predict_with_constellation(src_feats, trg_feats, query_xy, all_src_xy, src_w
     combined_orig = np.asarray(combined, dtype=np.float32)
     n_queries = len(q_orig)
 
-    xy_res = to_resized(combined_orig, src_wh, size).to(device)
+    xy_res = to_resized(combined_orig, src_wh, size, letterbox=lb).to(device)
     if flipped:
         xy_res[:, 0] = size - xy_res[:, 0]
 
@@ -196,7 +196,7 @@ def predict_with_constellation(src_feats, trg_feats, query_xy, all_src_xy, src_w
     transform, _, info = robust_constellation_fit(src_res_np, trg_res_np, conf, size, cfg)
     prior_weight = float(cfg["constellation_prior_weight"])
     if transform is None or prior_weight <= 0:
-        out = to_original(raw_pred_res[:n_queries].cpu(), trg_wh, size).numpy()
+        out = to_original(raw_pred_res[:n_queries].cpu(), trg_wh, size, letterbox=lb).numpy()
         return out, info
 
     # Geometric expectation for the M query points in resized space [M, 2]
@@ -211,5 +211,5 @@ def predict_with_constellation(src_feats, trg_feats, query_xy, all_src_xy, src_w
 
     refined_sim = sim[:n_queries] + prior_weight * gauss_bonus
     refined_res = locate(refined_sim, size, cfg["matcher"], cfg["soft_window"], cfg["soft_temperature"])
-    out = to_original(refined_res.cpu(), trg_wh, size).numpy()
+    out = to_original(refined_res.cpu(), trg_wh, size, letterbox=lb).numpy()
     return out, info

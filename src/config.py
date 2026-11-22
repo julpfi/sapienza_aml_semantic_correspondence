@@ -122,6 +122,7 @@ BASE = {
     "pos_embed_interp": "hub",         # "hub" = torch.hub interpolation (Lang results), "hf" = transformers default
     "pos_embed_interp_offset": 0.1,    # torch.hub DINOv2 value (models without registers)
     "image_size": 644,                 # square input; multiple of the patch size (14). Lang submission: 644
+    "letterbox": False,                # True = preserve aspect ratio & center-pad to image_size (removes shear)
     "image_mean": [0.485, 0.456, 0.406],
     "image_std": [0.229, 0.224, 0.225],
     "attn_implementation": "sdpa",     # transformers attention; "sdpa" uses the memory-efficient kernel on a T4
@@ -293,6 +294,7 @@ V3_OFF = {
     "pair_batch": False, "hard_neg_weight": 1.0, "ema_decay": 0.0, "fusion": "none",
     "cross_transform": False, "constellation_align": False, "object_zoom": False,
     "loss_upsample": 1, "adaptive_pos_radius": False, "lora_train_layernorm": False,
+    "letterbox": False,
 }
 
 # v2 values of the training, augmentation and fusion keys that D-008 changed. BASE updated with these = the v2 training
@@ -305,11 +307,12 @@ V2_TRAINING = {
     "aug_grayscale_prob": 0.1, "aug_crop_scale": [0.7, 1.0], "aug_blur_prob": 0.1, "fusion": "none",
     "cross_transform": False, "constellation_align": False, "object_zoom": False,
     "loss_upsample": 1, "adaptive_pos_radius": False, "lora_train_layernorm": False,
+    "letterbox": False,
 }
 
 # Unified winners preset: lorav2 attention+MLP LoRA (less overfitting on unseen test images) +
-# analysis_report 92x92 upsampled loss & scale-adaptive positive radius + wider scale/rotation
-# augmentation + 2-stage object-centric zoom at inference (+9.4 pts on Kaggle).
+# analysis_report 92x92 upsampled loss & scale-adaptive positive radius + aspect-preserving letterbox +
+# wider scale/rotation augmentation + 2-stage object-centric zoom at inference.
 UNIFIED_LORA = {
     "train_mode": "lora",
     "lora_blocks": 4,
@@ -330,6 +333,7 @@ UNIFIED_LORA = {
     "hard_neg_weight": 5.0,
     "aug_rotation_deg": 25.0,
     "aug_crop_scale": [0.45, 1.0],
+    "letterbox": True,
     "cross_transform": False,
     "constellation_align": False,
     "object_zoom": True,

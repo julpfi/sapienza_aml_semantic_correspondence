@@ -45,8 +45,8 @@ class EnsembleModel(nn.Module):
 
     def _model_sim_maps(self, idx, src_feats, trg_feats, pts_orig, src_wh, cfg, flipped=False):
         """[K, H, W] cosine similarity maps for points [K, 2] on one member model."""
-        size = int(cfg["image_size"])
-        xy = to_resized(pts_orig, src_wh, size).to(src_feats.device)
+        size, lb = int(cfg["image_size"]), bool(cfg.get("letterbox", False))
+        xy = to_resized(pts_orig, src_wh, size, letterbox=lb).to(src_feats.device)
         if flipped:
             xy[:, 0] = size - xy[:, 0]
         q = sample_point_features(src_feats, xy, size)  # [K, C]
@@ -87,7 +87,7 @@ class EnsembleModel(nn.Module):
     @torch.no_grad()
     def predict(self, sample, cfg=None, cache=None):
         cfg = cfg or self.cfg
-        size = int(cfg["image_size"])
+        size, lb = int(cfg["image_size"]), bool(cfg.get("letterbox", False))
         src_wh, trg_wh = sample["src_img"].size, sample["trg_img"].size
         stage1_feats, flipped = self._pair_stage_features(
             sample["src_img"], sample["trg_img"], sample["src_image"], sample["trg_image"], cfg, cache
@@ -98,7 +98,7 @@ class EnsembleModel(nn.Module):
                     for i, (sf, tf) in enumerate(stage1_feats)]
             sim = self._combine_sims(sims)
             pred = locate(sim, size, cfg["matcher"], cfg["soft_window"], cfg["soft_temperature"])
-            return to_original(pred.cpu(), trg_wh, size).numpy()[0], flipped
+            return to_original(pred.cpu(), trg_wh, size, letterbox=lb).numpy()[0], flipped
 
         # --- Shared 2-Stage Object-Centric Zoom ---
         pair_key = ("ens_zoom", str(sample["pair_id"]), sample["src_image"], sample["trg_image"], size, bool(flipped))
@@ -111,7 +111,7 @@ class EnsembleModel(nn.Module):
                          for i, (sf, tf) in enumerate(stage1_feats)]
             sim1_ctx = self._combine_sims(sims1_ctx)
             coarse_res = locate(sim1_ctx, size, cfg["matcher"], cfg["soft_window"], cfg["soft_temperature"])
-            coarse_ctx = to_original(coarse_res.cpu(), trg_wh, size).numpy()
+            coarse_ctx = to_original(coarse_res.cpu(), trg_wh, size, letterbox=lb).numpy()
 
             max_area = float(cfg.get("zoom_max_area", 1.0))
             s_crop, sbox = bbox_crop(sample["src_img"], ctx_xy, cfg["zoom_margin"], cfg["zoom_min_frac"],
@@ -143,7 +143,7 @@ class EnsembleModel(nn.Module):
                      for i, (sf, tf) in enumerate(stage1_feats)]
             sim1 = self._combine_sims(sims1)
             pred = locate(sim1, size, cfg["matcher"], cfg["soft_window"], cfg["soft_temperature"])
-            return to_original(pred.cpu(), trg_wh, size).numpy()[0], flipped
+            return to_original(pred.cpu(), trg_wh, size, letterbox=lb).numpy()[0], flipped
 
         sims2 = [self._model_sim_maps(i, sf2, tf2, q_in[None], sc_wh, cfg, flipped)
                  for i, (sf2, tf2) in enumerate(stage2_feats)]
@@ -157,8 +157,8 @@ class EnsembleModel(nn.Module):
             sim1 = self._combine_sims(sims1)
             if float(sim1.max()) > float(sim2.max()) + 0.05:
                 pred1 = locate(sim1, size, cfg["matcher"], cfg["soft_window"], cfg["soft_temperature"])
-                return to_original(pred1.cpu(), trg_wh, size).numpy()[0], flipped
-            sim1_crop = _sample_stage1_into_crop(sim1, tbox, trg_wh, sim2.shape[1:], size)
+                return to_original(pred1.cpu(), trg_wh, size, letterbox=lb).numpy()[0], flipped
+            sim1_crop = _sample_stage1_into_crop(sim1, tbox, trg_wh, sim2.shape[1:], size, letterbox=lb)
             sim2 = (1.0 - w1) * sim2 + w1 * sim1_crop
 
         if cfg.get("constellation_align"):
@@ -172,7 +172,7 @@ class EnsembleModel(nn.Module):
             ])
             raw_res = locate(sims_all, size, cfg["matcher"], cfg["soft_window"], cfg["soft_temperature"])
             conf = sims_all.flatten(1).max(dim=-1).values.detach().cpu().numpy()
-            src_res = to_resized(combined, sc_wh, size).numpy()
+            src_res = to_resized(combined, sc_wh, size, letterbox=lb).numpy()
             if flipped:
                 src_res[:, 0] = size - src_res[:, 0]
             transform, _, _ = robust_constellation_fit(src_res, raw_res.detach().cpu().numpy(), conf, size, cfg)
@@ -187,5 +187,5 @@ class EnsembleModel(nn.Module):
                 sim2 = sim2 + prior_weight * bonus
 
         pred2 = locate(sim2, size, cfg["matcher"], cfg["soft_window"], cfg["soft_temperature"])
-        pred_xy = to_original(pred2.cpu(), tc_wh, size).numpy()[0]
+        pred_xy = to_original(pred2.cpu(), tc_wh, size, letterbox=lb).numpy()[0]
         return pred_xy + np.array(tbox[:2], dtype=np.float32), flipped

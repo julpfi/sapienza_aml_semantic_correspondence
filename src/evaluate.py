@@ -28,10 +28,10 @@ def validation_loss(cfg, model, sample, cache):
     trg_feats = model.image_features(sample["trg_img"], cache=cache, key=sample["trg_image"])
     if hasattr(model, "cross_transform"):
         src_feats, trg_feats = model.pair_features(src_feats, trg_feats)
-    size = cfg["image_size"]
+    size, lb = cfg["image_size"], bool(cfg.get("letterbox", False))
     stats = matching_loss(src_feats.float(), trg_feats.float(),
-                          to_resized(sample["src_xy"][None], sample["src_img"].size, size),
-                          to_resized(sample["trg_xys"], sample["trg_img"].size, size), cfg)
+                          to_resized(sample["src_xy"][None], sample["src_img"].size, size, letterbox=lb),
+                          to_resized(sample["trg_xys"], sample["trg_img"].size, size, letterbox=lb), cfg)
     return [float(value) for name, value in zip(LOSS_STATS, stats) if name in LOGGED_STATS]
 
 
