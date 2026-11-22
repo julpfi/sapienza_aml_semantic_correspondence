@@ -15,6 +15,7 @@ import argparse
 import json
 import shutil
 import sys
+from pathlib import Path
 
 from src.config import data_path, get_config, resolved_device
 from src.utils.env import load_secrets
@@ -46,6 +47,8 @@ def parse_args(argv=None):
                         help="Comma-separated run IDs to ensemble in similarity space (evaluate/submit)")
     parser.add_argument("--ensemble-weights", default=None,
                         help="Comma-separated weights for --ensemble (default: equal)")
+    parser.add_argument("--submission-name", default="submission.csv",
+                        help="Filename for --mode submit inside <run_dir>/ (default: submission.csv)")
     args = parser.parse_args(argv)
 
     if args.resume and args.mode != "train":
@@ -187,7 +190,10 @@ def main(argv=None):
     from src.predict import check_submission, predict, write_submission
 
     predictions = predict(cfg, model, run_dir)
-    out = run_dir / "submission.csv"
+    sub_name = Path(args.submission_name).name or "submission.csv"
+    if not sub_name.endswith(".csv"):
+        sub_name = f"{sub_name}.csv"
+    out = run_dir / sub_name
     write_submission(cfg, predictions, out)
     print(json.dumps(check_submission(cfg, out), indent=2))
     if cfg["runtime"] == "kaggle":  # a Kaggle notebook submits this file
