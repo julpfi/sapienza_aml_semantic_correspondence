@@ -26,14 +26,19 @@ def make_val_pair_ids(train_df, cfg):
 
 
 def make_disjoint_folds(train_df, cfg, n_folds=None):
-    """Assign connected components of (source_image, target_image) to n_folds image-disjoint folds.
+    """Assign connected components of (source_image, target_image) to n_folds image-disjoint folds,
+    balancing query count, multi-target share, and small-object share across folds.
     Returns dict {str(fold): [pair_id, ...]} with zero image overlap between any two folds."""
     n_folds = int(n_folds or cfg.get("val_n_folds", 5))
     col = cfg["csv_columns"]
     pair_col, src_col, trg_col = col["pair_id"], col["src_image"], col["trg_image"]
+    trg_xys_col, scale_col = col["trg_xys"], col["scale"]
 
     pairs = train_df[[pair_col, src_col, trg_col]].drop_duplicates()
-    q_counts = train_df.groupby(pair_col).size().to_dict()
+    has_meta = trg_xys_col in train_df.columns and scale_col in train_df.columns
+    is_multi = (train_df[trg_xys_col].apply(lambda s: len(json.loads(s)) > 1)
+                if has_meta else None)
+    is_small = (train_df[scale_col] < 150.0) if has_meta else None
 
     adj = defaultdict(set)
     for _, r in pairs.iterrows():
@@ -42,6 +47,7 @@ def make_disjoint_folds(train_df, cfg, n_folds=None):
         adj[t].add(s)
 
     visited, comps = set(), []
+    src_str = train_df[src_col].astype(str)
     for img in sorted(adj):
         if img in visited:
             continue
@@ -53,20 +59,38 @@ def make_disjoint_folds(train_df, cfg, n_folds=None):
             visited.add(u)
             comp.add(u)
             stack.extend(adj[u] - visited)
-        comp_pairs = sorted(str(p) for p in pairs.loc[pairs[src_col].astype(str).isin(comp), pair_col])
-        comp_queries = sum(int(q_counts.get(p, 0)) for p in comp_pairs)
-        comps.append((comp_queries, len(comp_pairs), comp_pairs, comp))
+        mask = src_str.isin(comp)
+        comp_pairs = sorted(str(p) for p in train_df.loc[mask, pair_col].unique())
+        n_q = int(mask.sum())
+        n_m = int(is_multi[mask].sum()) if has_meta else 0
+        n_s = int(is_small[mask].sum()) if has_meta else 0
+        comps.append((n_q, n_m, n_s, comp_pairs, comp))
 
-    # Largest components first (deterministic tie-break by first pair_id) -> balanced folds.
-    comps.sort(key=lambda x: (-x[0], -x[1], x[2][0]))
+    # Largest components first (deterministic tie-break by first pair_id), minimizing total
+    # normalized squared imbalance in (queries, multi-target queries, small-object queries).
+    comps.sort(key=lambda x: (-x[0], -len(x[3]), x[3][0]))
+    tot_q = max(sum(x[0] for x in comps) / n_folds, 1.0)
+    tot_m = max(sum(x[1] for x in comps) / n_folds, 1.0)
+    tot_s = max(sum(x[2] for x in comps) / n_folds, 1.0)
+
     fold_pairs = {str(f): [] for f in range(n_folds)}
     fold_imgs = {str(f): set() for f in range(n_folds)}
-    fold_queries = [0] * n_folds
-    for n_q, _, comp_pairs, comp_imgs in comps:
-        best_f = min(range(n_folds), key=lambda f: (fold_queries[f], len(fold_pairs[str(f)]), f))
+    fq, fm, fs = [0] * n_folds, [0] * n_folds, [0] * n_folds
+    for n_q, n_m, n_s, comp_pairs, comp_imgs in comps:
+        def _delta(f):
+            old = ((fq[f] - tot_q) / tot_q) ** 2
+            new = ((fq[f] + n_q - tot_q) / tot_q) ** 2
+            if has_meta:
+                old += ((fm[f] - tot_m) / tot_m) ** 2 + ((fs[f] - tot_s) / tot_s) ** 2
+                new += ((fm[f] + n_m - tot_m) / tot_m) ** 2 + ((fs[f] + n_s - tot_s) / tot_s) ** 2
+            return (new - old, len(fold_pairs[str(f)]), f)
+
+        best_f = min(range(n_folds), key=_delta)
         fold_pairs[str(best_f)].extend(comp_pairs)
         fold_imgs[str(best_f)].update(comp_imgs)
-        fold_queries[best_f] += n_q
+        fq[best_f] += n_q
+        fm[best_f] += n_m
+        fs[best_f] += n_s
 
     # Verify strict 0-image overlap between all pairs of folds.
     for i in range(n_folds):
