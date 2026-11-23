@@ -175,7 +175,6 @@ BASE = {
     "marginal_radius": 1.0,            # marginal: positive cells within this many cells of a target (Lang: 1.0)
     "loss_upsample": 1,                # >1 upsamples trg_feats before loss (2 = 92x92, eliminates 0-cell queries)
     "adaptive_pos_radius": False,      # True = cap marginal positive radius at 0.08 * object_size_in_cells
-    "bidirectional_loss_weight": 0.0,  # >0 adds reverse trg->src marginal loss on single-target queries (pair_batch)
     "checkpoint_every_steps": 0,       # last.pt every N updates; 0 = end of epoch only (fewer Drive writes)
     "val_every_epoch": True,
     # Final submission only: also train on the validation pairs (+22% queries). Validation, best.pt
@@ -290,7 +289,7 @@ V3_OFF = {
     "pair_batch": False, "hard_neg_weight": 1.0, "ema_decay": 0.0, "fusion": "none",
     "cross_transform": False, "object_zoom": False,
     "loss_upsample": 1, "adaptive_pos_radius": False, "lora_train_layernorm": False,
-    "val_fold": None, "feature_layers": None, "csls_weight": 0.0, "bidirectional_loss_weight": 0.0,
+    "val_fold": None, "feature_layers": None, "csls_weight": 0.0,
 }
 
 # v2 values of the training, augmentation and fusion keys that D-008 changed. BASE updated with these = the v2 training
@@ -303,7 +302,7 @@ V2_TRAINING = {
     "aug_grayscale_prob": 0.1, "aug_crop_scale": [0.7, 1.0], "aug_blur_prob": 0.1, "fusion": "none",
     "cross_transform": False, "object_zoom": False,
     "loss_upsample": 1, "adaptive_pos_radius": False, "lora_train_layernorm": False,
-    "val_fold": None, "feature_layers": None, "csls_weight": 0.0, "bidirectional_loss_weight": 0.0,
+    "val_fold": None, "feature_layers": None, "csls_weight": 0.0,
 }
 
 # Unified winners preset: lorav2 attention+MLP LoRA (less overfitting on unseen test images) +
@@ -334,24 +333,19 @@ UNIFIED_LORA = {
     "fusion": "none",
 }
 
-# v2 of UNIFIED_LORA: preserves the 0.64851 recipe and adds:
-# 1. Image-disjoint 5-fold validation (0% image leakage between train and val)
-# 2. Multi-layer DINOv2 readout (blocks -3 and -1 concatenated, 1536-d)
-# 3. Bidirectional trg->src marginal loss on single-target queries
-# (CSLS disabled: top-k hubness on dense zoomed maps penalized foreground object peaks by -4.6 pts)
-UNIFIED_LORA_V2 = {
+# Stronger backbone upgrade: exact 0.64851 UNIFIED_LORA recipe on facebook/dinov2-large (304M, 24 blocks, 1024-d).
+# Uses the same legacy val split, final layer -1, 92x92 adaptive loss, and 2-stage object zoom.
+UNIFIED_LORA_LARGE = {
     **UNIFIED_LORA,
-    "val_fold": 0,
-    "max_val_queries": 0,
-    "feature_layers": [-3, -1],
-    "csls_weight": 0.0,
-    "csls_k": 10,
-    "bidirectional_loss_weight": 0.5,
+    "model_id": "facebook/dinov2-large",
+    "model_revision": "47b73eefe95e8d44ec3623f8890bd894b6ea2d6c",
+    "lora_blocks": 6,
+    "lr_lora": 8e-5,
 }
 
 PRESETS = {
     "unified_lora": UNIFIED_LORA,
-    "unified_lora_v2": UNIFIED_LORA_V2,
+    "unified_lora_large": UNIFIED_LORA_LARGE,
 }
 ACTIVE_PRESET = None
 

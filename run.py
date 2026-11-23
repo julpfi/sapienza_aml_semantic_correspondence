@@ -47,8 +47,6 @@ def parse_args(argv=None):
                         help="Image-disjoint validation fold (0..4; -1 = legacy val_pair_ids.json)")
     parser.add_argument("--csls-weight", type=float, default=None,
                         help="Override cfg['csls_weight'] (CSLS hubness suppression; 0.0 = off)")
-    parser.add_argument("--bidirectional-weight", type=float, default=None,
-                        help="Override cfg['bidirectional_loss_weight'] for new runs")
     parser.add_argument("--ensemble", default=None,
                         help="Comma-separated run IDs to ensemble in similarity space (evaluate/submit)")
     parser.add_argument("--ensemble-weights", default=None,
@@ -70,8 +68,7 @@ def _apply_cli_overrides(cfg, args):
     for attr, key in (("image_size", "image_size"), ("soft_window", "soft_window"),
                       ("soft_temperature", "soft_temperature"), ("flip_test", "flip_test"),
                       ("object_zoom", "object_zoom"), ("cross_transform", "cross_transform"),
-                      ("fusion", "fusion"), ("csls_weight", "csls_weight"),
-                      ("bidirectional_weight", "bidirectional_loss_weight")):
+                      ("fusion", "fusion"), ("csls_weight", "csls_weight")):
         val = getattr(args, attr)
         if val is not None:
             cfg[key] = val
