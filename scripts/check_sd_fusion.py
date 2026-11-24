@@ -38,7 +38,8 @@ def make_cfg(**overrides):
     # bilinearly resized to the DINOv2 grid (224 / 14 = 16): the resize path is exercised too.
     cfg.update({"sd_model_id": "hf-internal-testing/tiny-stable-diffusion-torch",
                 "sd_model_revision": "a88cdfbd91f96ec7f61eb7484b652ff0f4ee701d",
-                "image_size": 224, "sd_image_size": 64, "device": "cpu", "max_train_queries": 1})
+                "image_size": 224, "sd_image_size": 64, "device": "cpu", "max_train_queries": 1,
+                "cross_transform": False, "lora_train_layernorm": False, "object_zoom": False})
     cfg.update(overrides)
     return cfg
 
@@ -110,6 +111,35 @@ def main():
     check("adapter: final zero layer has a non-zero gradient", grad is not None and grad.abs().max().item() > 0,
           f"(|grad| max {grad.abs().max().item():.2e})" if grad is not None else "")
 
+    # 3b. adapter_mix: init equals the adapter output, and no dead branch.
+    mix = Fusion("adapter_mix", 768, sd.out_dim, cfg).eval()
+    adapter_ref = Fusion("adapter", 768, sd.out_dim, cfg).eval()
+    check("adapter_mix: fused == normalize(dino) at init", (mix(dino, feats) - dino).abs().max().item() < 1e-6)
+    with torch.no_grad():
+        for p in mix.out.parameters():
+            p.normal_(0, 0.05)
+    adapter_ref.load_state_dict({k: v for k, v in mix.state_dict().items() if not k.startswith("mix.")})
+    diff = (mix(dino, feats) - adapter_ref(dino, feats)).abs().max().item()
+    check("adapter_mix: equals the adapter output at init (same inp/blocks/out)", diff < 1e-6, f"(max abs diff {diff:.2e})")
+    check("adapter_mix: same adapter module names", set(adapter_ref.state_dict())
+          == {k for k in mix.state_dict() if not k.startswith("mix.")})
+    fresh_mix = Fusion("adapter_mix", 768, sd.out_dim, cfg)
+    fresh_mix.train()
+    toy_dino = torch.randn(2, 768, *grid)
+    toy_sd = torch.randn(2, sd.out_dim, *grid)
+    loss = (fresh_mix(toy_dino, toy_sd) * torch.randn(2, 768, *grid)).sum()
+    loss.backward()
+    check("adapter_mix: grad of out.weight non-zero at init", fresh_mix.out.weight.grad.abs().max().item() > 0)
+    # At init s = 0, so the s half of mix has a zero gradient; after one step out != 0 and it must receive one.
+    optimizer = torch.optim.SGD(fresh_mix.parameters(), lr=0.1)
+    optimizer.step()
+    optimizer.zero_grad()
+    (fresh_mix(toy_dino, toy_sd) * torch.randn(2, 768, *grid)).sum().backward()
+    w = fresh_mix.mix.weight.grad
+    check("adapter_mix: grads of both halves of mix.weight non-zero",
+          w[:, :768].abs().max().item() > 0 and w[:, 768:].abs().max().item() > 0)
+    check("adapter_mix: out_dim = dino_dim", fresh_mix.out_dim == 768 and fresh_mix(toy_dino, toy_sd).shape[1] == 768)
+
     # 4. Concat.
     concat = Fusion("concat", 768, sd.out_dim, cfg)
     out = concat(dino, feats)
@@ -152,6 +182,61 @@ def main():
         moved = (fresh(x) - none_feats).abs().max().item()
     check("checkpoint: reload reproduces the features", diff < 1e-6 and moved > 1e-4,
           f"(max abs diff {diff:.2e}; vs DINOv2 {moved:.2e})")
+
+    # 8. D-009: multi-block features, noise ensemble, adapter dropout, train / eval sample count, preset.
+    import torch.nn.functional as F
+
+    multi_model = build_model(make_cfg(fusion="adapter", sd_up_blocks=[0, 1], sd_noise_samples=2,
+                                       adapter_dropout=0.5))
+    msd = multi_model.sd
+    channels = list(reversed(msd.unet.config.block_out_channels))
+    check("sd multi: out_dim = sum of block channels", msd.out_dim == channels[0] + channels[1], f"({msd.out_dim})")
+    mfeats = msd(x, grid)
+    check("sd multi: shape and unit norm", tuple(mfeats.shape) == (2, msd.out_dim, *grid)
+          and (mfeats.norm(dim=1) - 1).abs().max().item() < 1e-5)
+    # Rebuild the expected tensor from the single-block hooks: each block normalised, then the concat normalised.
+    expected = []
+    for block in (0, 1):
+        single_model = build_model(make_cfg(fusion="adapter", sd_up_block=block))
+        expected.append(single_model.sd(x, grid))
+        del single_model
+    manual = F.normalize(torch.cat(expected, dim=1), dim=1)
+    diff = (manual - mfeats).abs().max().item()
+    check("sd multi: equals the per-block normalised concat", diff < 1e-5, f"(max abs diff {diff:.2e})")
+    sd1 = build_model(make_cfg(fusion="adapter", sd_up_block=1)).sd
+    check("sd: sd_up_blocks None equals the single-block features", torch.equal(sd1(x, grid), sd1(x, grid, 1)))
+    f1, f2 = msd(x, grid, 1), msd(x, grid, 2)
+    check("sd: n_samples=2 deterministic", torch.equal(f2, msd(x, grid, 2)))
+    check("sd: n_samples=2 differs from n_samples=1", (f1 - f2).abs().max().item() > 1e-6)
+    check("sd: n_samples=1 equals the default call", torch.equal(f1, msd(x, grid)))
+
+    drop_adapter = Fusion("adapter", 768, sd.out_dim, make_cfg(adapter_dropout=0.5)).eval()
+    diff = (drop_adapter(dino, feats) - dino).abs().max().item()
+    check("adapter dropout: eval mode at init gives fused == dino", diff < 1e-6, f"(max abs diff {diff:.2e})")
+
+    calls = []
+    real_forward = multi_model.sd.forward
+    multi_model.sd.forward = lambda xx, hw, n=1: (calls.append(n), real_forward(xx, hw, n))[1]
+    multi_model.train()
+    multi_model(x[:1])
+    multi_model.eval()
+    multi_model(x[:1])
+    check("model: train uses 1 noise sample, eval uses sd_noise_samples", calls == [1, 2], f"({calls})")
+
+    preset = get_config("unified_lora_large_sd")
+    check("preset unified_lora_large_sd keys", preset["fusion"] == "adapter" and preset["sd_up_blocks"] == [0, 1, 2]
+          and preset["sd_noise_samples"] == 4 and preset["adapter_dropout"] == 0.2
+          and preset["model_id"] == "facebook/dinov2-large")
+
+    mix_model = build_model(make_cfg(fusion="adapter_mix"))
+    mix_keys = trainable_state(mix_model)
+    check("model adapter_mix: fusion.mix.* in the trainable state",
+          "fusion.mix.weight" in mix_keys and "fusion.mix.bias" in mix_keys
+          and "fusion.mix.weight" in mix_model.state_dict(), f"({len(mix_keys)} keys)")
+    with torch.no_grad():
+        diff = (mix_model(x) - none_feats).abs().max().item()
+    check("model adapter_mix: features equal the fusion 'none' model's at init", diff < 1e-5, f"(max abs diff {diff:.2e})")
+    check("preset unified_lora_large_sd_mix", get_config("unified_lora_large_sd_mix")["fusion"] == "adapter_mix")
 
     # Last: rounding through fp16 changes the weights of this model.
     fresh.sd.half()  # on CPU the _apply guard must bring the weights back to fp32

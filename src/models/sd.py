@@ -3,7 +3,9 @@
 The image goes through the VAE encoder; the latent gets noise of ONE fixed step (sd_timestep, DIFT: 261)
 from one fixed noise tensor, and the UNet runs once with the empty-prompt embedding. The feature map is
 the output of decoder block `unet.up_blocks[sd_up_block]` (DIFT: 1), read with a forward hook; the rest
-of the UNet is skipped. No denoising loop, nothing trained.
+of the UNet is skipped. With `sd_up_blocks` (SD+DINO) several blocks are read: each is resized to the grid and
+L2-normalised, then concatenated. With n_samples > 1 the raw features of several fixed noises are averaged
+(DIFT ensemble). No denoising loop, nothing trained.
 Grid: SD 2.1 at sd_image_size 736 -> latent 92 (VAE /8) -> up-block 1 at 1/16 of the input = 46 cells,
 the same grid as DINOv2 at 644 / 14. Other sizes are bilinearly resized to the DINOv2 grid.
 diffusers is imported here only, and this module only when fusion != "none".
@@ -49,7 +51,7 @@ def _load(cls, source, revision, subfolder, dtype):
 
 
 class SDFeatures(nn.Module):
-    """forward(x [B, 3, S, S] DINO-normalised, out_hw) -> L2-normalised features [B, out_dim, h, w], float32."""
+    """forward(x [B, 3, S, S] DINO-normalised, out_hw, n_samples) -> L2-normalised features [B, out_dim, h, w], float32."""
 
     def __init__(self, cfg):
         super().__init__()
@@ -79,9 +81,13 @@ class SDFeatures(nn.Module):
             prompt = text_encoder(tokens.input_ids)[0]  # [1, 77, D]
         del text_encoder, tokenizer
 
-        self.up_block = cfg["sd_up_block"]
-        if not 0 <= self.up_block < len(self.unet.up_blocks):
-            raise ValueError(f"sd_up_block must be in [0, {len(self.unet.up_blocks)}), got {self.up_block}")
+        multi = cfg.get("sd_up_blocks")
+        self.up_blocks = list(multi) if multi else [cfg["sd_up_block"]]
+        for block in self.up_blocks:
+            if not 0 <= block < len(self.unet.up_blocks):
+                raise ValueError(f"sd up-block must be in [0, {len(self.unet.up_blocks)}), got {block}")
+        self.multi = bool(multi)
+        self.seed = cfg.get("seed", 0)
         self.image_size = cfg["sd_image_size"]
         # Clamped for tiny test schedulers with fewer steps.
         self.timestep = min(int(cfg["sd_timestep"]), scheduler.config.num_train_timesteps - 1)
@@ -89,30 +95,39 @@ class SDFeatures(nn.Module):
         self.noise_scale = (alpha ** 0.5, (1 - alpha) ** 0.5)
         # Stable Diffusion latent scaling factor, used when the VAE config has none
         self.latent_scale = getattr(self.vae.config, "scaling_factor", None) or 0.18215
-        self.out_dim = list(reversed(self.unet.config.block_out_channels))[self.up_block]
+        channels = list(reversed(self.unet.config.block_out_channels))
+        self.out_dim = sum(channels[b] for b in self.up_blocks)
 
         vae_factor = 2 ** (len(self.vae.config.block_out_channels) - 1)
         if self.image_size % vae_factor:
             raise ValueError(f"sd_image_size {self.image_size} must be a multiple of the VAE factor {vae_factor}")
         latent = self.image_size // vae_factor
-        g = torch.Generator().manual_seed(cfg.get("seed", 0))
-        noise = torch.randn(1, self.unet.config.in_channels, latent, latent, generator=g)
+        self.noise_shape = (1, self.unet.config.in_channels, latent, latent)
         mean = torch.tensor(cfg["image_mean"], dtype=torch.float32).view(1, 3, 1, 1)
         std = torch.tensor(cfg["image_std"], dtype=torch.float32).view(1, 3, 1, 1)
         # Not persistent: rebuilt from cfg, never in checkpoints.
         self.register_buffer("prompt", prompt.to(dtype), persistent=False)
-        self.register_buffer("noise", noise, persistent=False)
         self.register_buffer("mean", mean, persistent=False)
         self.register_buffer("std", std, persistent=False)
 
-        self._captured = None
-        self.unet.up_blocks[self.up_block].register_forward_hook(self._capture)
+        self._captured = {}
+        deepest_needed = max(self.up_blocks)  # up_blocks run 0, 1, 2, ...: this one is reached last
+        for block in self.up_blocks:
+            self.unet.up_blocks[block].register_forward_hook(self._make_hook(block, stop=block == deepest_needed))
         self.requires_grad_(False)
         self.train(False)
 
-    def _capture(self, module, inputs, output):
-        self._captured = output
-        raise _StopForward
+    def _make_hook(self, block, stop):
+        def hook(module, inputs, output):
+            self._captured[block] = output
+            if stop:
+                raise _StopForward
+        return hook
+
+    def _noise(self, k):
+        """Fixed noise of sample k: seed + k, so sample 0 is the single-sample noise."""
+        g = torch.Generator().manual_seed(self.seed + k)
+        return torch.randn(*self.noise_shape, generator=g)
 
     def train(self, mode=True):
         """Always in eval mode, whatever the parent model does."""
@@ -131,23 +146,32 @@ class SDFeatures(nn.Module):
         return self
 
     @torch.no_grad()
-    def forward(self, x, out_hw):
+    def forward(self, x, out_hw, n_samples=1):
         p = next(self.unet.parameters())
         rgb = (x.float() * self.std + self.mean) * 2 - 1
         rgb = F.interpolate(rgb, size=(self.image_size, self.image_size), mode="bilinear", align_corners=False)
         latents = self.vae.encode(rgb.to(p.dtype)).latent_dist.mean * self.latent_scale
-        # Same noise for every image: features do not depend on the batch or on source / target.
-        noise = self.noise.expand(x.shape[0], -1, -1, -1)
         a, b = self.noise_scale
-        noisy = (a * latents.float() + b * noise).to(p.dtype)
         t = torch.full((x.shape[0],), self.timestep, device=x.device, dtype=torch.long)
         prompt = self.prompt.expand(x.shape[0], -1, -1)
-        self._captured = None
-        try:
-            self.unet(noisy, t, encoder_hidden_states=prompt)
-        except _StopForward:
-            pass
-        feats, self._captured = self._captured.float(), None
-        if tuple(feats.shape[-2:]) != tuple(out_hw):
-            feats = F.interpolate(feats, size=tuple(out_hw), mode="bilinear", align_corners=False)
-        return F.normalize(feats, dim=1)
+        total = {}
+        for k in range(n_samples):
+            # Same noise for every image: features do not depend on the batch or on source / target.
+            noise = self._noise(k).to(x.device).expand(x.shape[0], -1, -1, -1)
+            noisy = (a * latents.float() + b * noise).to(p.dtype)
+            self._captured = {}
+            try:
+                self.unet(noisy, t, encoder_hidden_states=prompt)
+            except _StopForward:
+                pass
+            for block, feats in self._captured.items():
+                feats = feats.float()
+                total[block] = feats if block not in total else total[block] + feats
+            self._captured = {}
+        outs = []
+        for block in self.up_blocks:
+            feats = total[block] / n_samples
+            if tuple(feats.shape[-2:]) != tuple(out_hw):
+                feats = F.interpolate(feats, size=tuple(out_hw), mode="bilinear", align_corners=False)
+            outs.append(F.normalize(feats, dim=1) if self.multi else feats)
+        return F.normalize(torch.cat(outs, dim=1), dim=1)

@@ -46,7 +46,8 @@ class CorrespondenceModel(nn.Module):
         """Normalised images [B, 3, S, S] -> matching features [B, C, h, w]."""
         feats = self.head(self.backbone(x))
         if hasattr(self, "fusion"):
-            feats = self.fusion(feats, self.sd(x, feats.shape[-2:]))
+            n_samples = 1 if self.training else self.cfg.get("sd_noise_samples", 1)
+            feats = self.fusion(feats, self.sd(x, feats.shape[-2:], n_samples))
         return feats
 
     def pair_features(self, src_feats, trg_feats):

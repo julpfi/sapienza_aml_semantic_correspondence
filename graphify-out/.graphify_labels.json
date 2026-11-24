@@ -1,1 +1,16 @@
-{"0": "Dataset Loading", "1": "Coordinate Transforms", "2": "Run Entry & CLI Config", "3": "Imports & Test Suite", "4": "Docs: Data & Decisions", "5": "Pair Batch Checks", "6": "DINOv2 Backbone", "7": "Flip Augmentation", "8": "LoRA & EMA Checks", "9": "Run Comparison Bootstrap", "10": "Ensemble Model", "11": "Micro-batch Probe", "12": "Cross-Image Transform", "13": "On-disk Feature Store", "14": "Diagnostics Plots", "15": "Conda Environment", "16": "Fusion Adapter Bottleneck", "17": "Data Package Init", "18": "Utils Package Init", "19": "Src Package Init"}
+{
+  "3": "Imports & Test Suite",
+  "4": "Docs: Data & Decisions",
+  "5": "Pair Batch Checks",
+  "7": "Flip Augmentation",
+  "9": "Run Comparison Bootstrap",
+  "10": "Ensemble Model",
+  "11": "Micro-batch Probe",
+  "12": "Cross-Image Transform",
+  "13": "On-disk Feature Store",
+  "14": "Diagnostics Plots",
+  "15": "Conda Environment",
+  "17": "Data Package Init",
+  "18": "Utils Package Init",
+  "19": "Src Package Init"
+}

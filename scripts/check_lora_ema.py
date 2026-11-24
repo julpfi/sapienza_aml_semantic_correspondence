@@ -39,7 +39,8 @@ def raises(fn, exc):
 def make_cfg():
     cfg = get_config()
     cfg.update({"image_size": 224, "device": "cpu", "lora_rank": 8, "lora_alpha": 16, "lora_dropout": 0.05,
-                "lora_blocks": 2, "fusion": "none"})
+                "lora_blocks": 2, "fusion": "none", "cross_transform": False, "lora_train_layernorm": False,
+                "object_zoom": False})
     return cfg
 
 

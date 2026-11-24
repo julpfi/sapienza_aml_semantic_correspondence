@@ -207,12 +207,16 @@ BASE = {
     #   "none"    = DINOv2 only (v2)
     #   "concat"  = normalize(cat(dino, sd_concat_weight * sd)); nothing trained: the frozen gate
     #   "adapter" = normalize(dino + adapter(sd)); the adapter's last layer starts at zero (update 0 = DINOv2)
-    "fusion": "none",                  # "none" (default on giuseppe branch) | "concat" | "adapter"
+    #   "adapter_mix" = normalize(mix(cat(dino, adapter(sd)))), 1x1 conv initialised as [I | I] so update 0 = the adapter model
+    "fusion": "none",                  # "none" (default on giuseppe branch) | "concat" | "adapter" | "adapter_mix"
     "sd_model_id": "sd2-community/stable-diffusion-2-1",  # stabilityai/stable-diffusion-2-1 is no longer public
     "sd_model_revision": "bb2154823665391b4fb29b0b9cf82a198964ee05",  # Hub commit, checked 2026-11-16
     "sd_image_size": 736,              # SD input side; up-block 1 is 1/16 of it: 46 cells = the DINOv2 grid at 644
     "sd_timestep": 261,                # DIFT noising step
     "sd_up_block": 1,                  # decoder block whose output is the feature map (DIFT: 1)
+    "sd_up_blocks": None,              # None = only sd_up_block | list, e.g. [0, 1, 2] = SD+DINO (Zhang et al. 2023) multi-layer: each block L2-normalised, resized to the DINO grid, concatenated
+    "sd_noise_samples": 1,             # noise draws averaged at evaluation (DIFT feature ensemble); training always uses 1
+    "adapter_dropout": 0.0,            # Dropout2d on the SD input of the adapter, training only (GeoAware-SC, Zhang et al. 2024: 0.2)
     "sd_concat_weight": 0.5,           # weight of the SD part in "concat"
     "adapter_layers": 2,               # bottleneck blocks after the 1x1 input convolution
     "adapter_dim": 256,                # bottleneck width
@@ -290,6 +294,7 @@ V3_OFF = {
     "cross_transform": False, "object_zoom": False,
     "loss_upsample": 1, "adaptive_pos_radius": False, "lora_train_layernorm": False,
     "val_fold": None, "feature_layers": None, "csls_weight": 0.0,
+    "sd_up_blocks": None, "sd_noise_samples": 1, "adapter_dropout": 0.0,
 }
 
 # v2 values of the training, augmentation and fusion keys that D-008 changed. BASE updated with these = the v2 training
@@ -343,9 +348,25 @@ UNIFIED_LORA_LARGE = {
     "lr_lora": 8e-5,
 }
 
+# D-009: UNIFIED_LORA_LARGE plus frozen Stable Diffusion features through the adapter. SD 2.1 up-blocks 0, 1 and 2
+# at sd_image_size 736 are 23, 46 and 92 cells; all are resized to the 46-cell DINOv2 grid. The adapter in-conv maps
+# 1280 + 1280 + 640 channels to 1024. The adapter output layer is zero-initialised, so update 0 is the DINOv2-L LoRA model.
+UNIFIED_LORA_LARGE_SD = {
+    **UNIFIED_LORA_LARGE,
+    "fusion": "adapter",
+    "sd_up_blocks": [0, 1, 2],
+    "sd_noise_samples": 4,
+    "adapter_dropout": 0.2,
+}
+
+# D-011: UNIFIED_LORA_LARGE_SD with a learned 1x1 conv merging DINOv2 and the adapter output; starts as the adapter model.
+UNIFIED_LORA_LARGE_SD_MIX = {**UNIFIED_LORA_LARGE_SD, "fusion": "adapter_mix"}
+
 PRESETS = {
     "unified_lora": UNIFIED_LORA,
     "unified_lora_large": UNIFIED_LORA_LARGE,
+    "unified_lora_large_sd": UNIFIED_LORA_LARGE_SD,
+    "unified_lora_large_sd_mix": UNIFIED_LORA_LARGE_SD_MIX,
 }
 ACTIVE_PRESET = None
 

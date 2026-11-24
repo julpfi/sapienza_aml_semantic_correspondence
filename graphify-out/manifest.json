@@ -30,10 +30,10 @@
     "semantic_hash": "724006db202c225f922820c3b2d6e82d"
   },
   "run.py": {
-    "mtime": 1795527936.7036476,
-    "seen": 1795530915.5295527,
-    "ast_hash": "9c680c52d1c4d6c643faaffe4d9ba65b",
-    "semantic_hash": "9c680c52d1c4d6c643faaffe4d9ba65b"
+    "mtime": 1795531374.7109463,
+    "seen": 1795531877.7560372,
+    "ast_hash": "344b95cee72c01db24900a8d01079b09",
+    "semantic_hash": ""
   },
   "scripts/check_augmentation.py": {
     "mtime": 1795338766.548036,
@@ -54,10 +54,10 @@
     "semantic_hash": "8a365dfb5017e99b77429b2b9d8beb68"
   },
   "scripts/check_sd_fusion.py": {
-    "mtime": 1795527933.883536,
-    "seen": 1795530915.5295568,
-    "ast_hash": "c6609f37a2539a7d396d889789bf5660",
-    "semantic_hash": "c6609f37a2539a7d396d889789bf5660"
+    "mtime": 1795531374.7109463,
+    "seen": 1795531877.7560463,
+    "ast_hash": "56bf90992d249ef9698c1389cdbb788f",
+    "semantic_hash": ""
   },
   "scripts/check_transforms.py": {
     "mtime": 1795527936.7036476,
@@ -108,10 +108,10 @@
     "semantic_hash": "37e7cfbdd5a0d05ac49eab833ad4edb5"
   },
   "src/config.py": {
-    "mtime": 1795527936.7036476,
-    "seen": 1795530915.529568,
-    "ast_hash": "09ffadf30ae20ebe7b04483103037529",
-    "semantic_hash": "09ffadf30ae20ebe7b04483103037529"
+    "mtime": 1795531374.7149472,
+    "seen": 1795531877.7560647,
+    "ast_hash": "a7ee7aae366a0cbdaf7927551c293417",
+    "semantic_hash": ""
   },
   "src/diagnostics.py": {
     "mtime": 1795338766.6000361,
@@ -132,10 +132,10 @@
     "semantic_hash": "b63b77fc651bbc51b7e402d5620226dd"
   },
   "src/models/__init__.py": {
-    "mtime": 1795527936.7076485,
-    "seen": 1795530915.5295718,
-    "ast_hash": "d4cb8c5e53848793777a8725ca756f22",
-    "semantic_hash": "d4cb8c5e53848793777a8725ca756f22"
+    "mtime": 1795531374.7149472,
+    "seen": 1795531877.7560713,
+    "ast_hash": "875baba899dd489969bd6362d9100db3",
+    "semantic_hash": ""
   },
   "src/models/backbone.py": {
     "mtime": 1795527936.7076485,
@@ -150,10 +150,10 @@
     "semantic_hash": "5ac566291f4558c4e2ff9ddde0f980ce"
   },
   "src/models/fusion.py": {
-    "mtime": 1795338766.6280363,
-    "seen": 1795340176.2996998,
-    "ast_hash": "929ae42c602b99a68e75388887acae3b",
-    "semantic_hash": "929ae42c602b99a68e75388887acae3b"
+    "mtime": 1795531374.7149472,
+    "seen": 1795531877.7560785,
+    "ast_hash": "6a0c3790fcf39d42f9eb71fb4d51e0c7",
+    "semantic_hash": ""
   },
   "src/models/head.py": {
     "mtime": 1795338766.6320362,
@@ -180,10 +180,10 @@
     "semantic_hash": "a8962d14ecdd867bcf15e4b423e11124"
   },
   "src/models/sd.py": {
-    "mtime": 1795338766.6520362,
-    "seen": 1795340176.2997034,
-    "ast_hash": "d702f500adaf642b94511ca88b8cd79e",
-    "semantic_hash": "d702f500adaf642b94511ca88b8cd79e"
+    "mtime": 1795531742.160404,
+    "seen": 1795531877.7560875,
+    "ast_hash": "a50af5aef242ad2644588cbe8981e848",
+    "semantic_hash": ""
   },
   "src/models/zoom.py": {
     "mtime": 1795527936.7076485,
@@ -228,10 +228,10 @@
     "semantic_hash": "c31ca8f498ae582b21acef5f99691ff7"
   },
   "src/utils/checkpoint.py": {
-    "mtime": 1795338766.6840363,
-    "seen": 1795340176.2997098,
-    "ast_hash": "023748a64aecd8176fe06eb638e65a13",
-    "semantic_hash": "023748a64aecd8176fe06eb638e65a13"
+    "mtime": 1795531374.718948,
+    "seen": 1795531877.7561016,
+    "ast_hash": "ed7eeea0c2bec80ee90cb7b4a19987ff",
+    "semantic_hash": ""
   },
   "src/utils/ema.py": {
     "mtime": 1795338766.6880362,
@@ -294,16 +294,16 @@
     "semantic_hash": "4fed98a10b011f46547da4735b8e843f"
   },
   "docs/RUN.md": {
-    "mtime": 1795338766.5160363,
-    "seen": 1795340176.2997215,
-    "ast_hash": "1dffd9b64ab9cde792669070dcddd097",
-    "semantic_hash": "1dffd9b64ab9cde792669070dcddd097"
+    "mtime": 1795531712.707315,
+    "seen": 1795531877.7561212,
+    "ast_hash": "c74dd5baa8fdf26e279a8cab1770d59f",
+    "semantic_hash": ""
   },
   "docs/decisions.md": {
-    "mtime": 1795527933.8755338,
-    "seen": 1795530915.5296,
-    "ast_hash": "66a5c7320f498592290009f83708f0fc",
-    "semantic_hash": "66a5c7320f498592290009f83708f0fc"
+    "mtime": 1795531374.6349306,
+    "seen": 1795531877.756123,
+    "ast_hash": "af20e927d647c5122f8db01acc029576",
+    "semantic_hash": ""
   },
   "splits/val_disjoint_folds.json": {
     "mtime": 1795527936.7036476,
@@ -316,5 +316,17 @@
     "seen": 1795530915.5295746,
     "ast_hash": "e3f5e74b11c24f77a3736c9c819dc406",
     "semantic_hash": "e3f5e74b11c24f77a3736c9c819dc406"
+  },
+  "docs/reviews/2026-11-24-sd-dinov2-large-fusion.md": {
+    "mtime": 1795531847.1625092,
+    "seen": 1795531877.7561255,
+    "ast_hash": "db6cdfe1ede612d56dbaf0c2e2323a5f",
+    "semantic_hash": ""
+  },
+  "docs/literature/2026-11-24-sd-dinov2-large-fusion.md": {
+    "mtime": 1795530995.8226843,
+    "seen": 1795531877.7561276,
+    "ast_hash": "4f4952be798fb1bcd6cced5bd52eb638",
+    "semantic_hash": ""
   }
 }

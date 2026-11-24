@@ -47,10 +47,17 @@ def trainable_state(model):
 
 
 def load_model_weights(model, weights):
-    """Load a trainable_state() dict into a model. Unknown keys are an error."""
-    missing, unexpected = model.load_state_dict(weights, strict=False)
+    """Load a trainable_state() dict into a model. Unknown keys are an error.
+
+    Trainable parameters missing from the weights only get a warning: stage 2 starts an adapter
+    from zero init on purpose, but a saved adapter run that lost its fusion.* keys would be random.
+    """
+    _, unexpected = model.load_state_dict(weights, strict=False)
     if unexpected:
         raise KeyError(f"Checkpoint has keys the model does not know: {unexpected[:5]}")
+    missing = [n for n, p in model.named_parameters() if p.requires_grad and n not in weights]
+    if missing:
+        print(f"Warning: {len(missing)} trainable parameters not in the checkpoint (keep their init): {missing[:5]}")
     return model
 
 

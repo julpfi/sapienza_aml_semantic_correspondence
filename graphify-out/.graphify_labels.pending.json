@@ -1,0 +1,20 @@
+{
+  "0": "evaluate.py",
+  "1": "torch",
+  "2": "run.py",
+  "6": "pathlib",
+  "8": "check_lora_ema.py",
+  "16": "train.py",
+  "20": "sweep.py",
+  "21": "json",
+  "22": "preprocess_image",
+  "23": "PCKMeter",
+  "24": "models/__init__.py",
+  "25": "CorrespondenceModel",
+  "26": "datasets.py",
+  "27": "Findings",
+  "28": "Review: D-009 SD multi-block fusion for DINOv2-large (2026-11-24)",
+  "29": "predict_with_zoom",
+  "30": "transforms.py",
+  "31": "Exception"
+}

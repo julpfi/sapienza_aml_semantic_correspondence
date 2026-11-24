@@ -246,6 +246,16 @@ current value. The plan is
 | `sd_image_size` / `sd_timestep` / `sd_up_block` | 736 / 261 / 1 | SD input side, noising step, decoder block of the feature map (46 cells = the DINOv2 grid at 644) | leave (DIFT recipe) |
 | `sd_concat_weight` | 0.5 | weight of the SD part in `concat` | 0.3 / 1.0 if the gate is close |
 | `adapter_layers` / `adapter_dim` / `lr_adapter` | 2 / 256 / 1e-4 (`BASE` now and `BASE` + `V2_TRAINING`: 3e-4) | adapter size and peak lr | with `fusion` `adapter` |
+| `sd_up_blocks` | None (only `sd_up_block`) | list of SD decoder blocks, e.g. `[0, 1, 2]` (SD 2.1: 1280 / 1280 / 640 channels, 23 / 46 / 92 cells at 736): each block is resized to the DINOv2 grid and L2-normalised, then concatenated (SD+DINO recipe, D-009) | preset `unified_lora_large_sd` |
+| `sd_noise_samples` | 1 | noise samples averaged at evaluation only (DIFT ensemble); training always uses one. Evaluation time grows with it | 4 in `unified_lora_large_sd` |
+| `adapter_dropout` | 0.0 | Dropout2d on the SD input of the adapter, training only (GeoAware-SC: 0.2) | 0.2 in `unified_lora_large_sd` |
+
+**SD + DINOv2-large (D-009).** Preset `unified_lora_large_sd` = `unified_lora_large` (DINOv2-L, LoRA on the last
+6 blocks) + `fusion` "adapter" + the three keys above. The adapter starts at zero, so at update 0 the model equals
+the DINOv2-L LoRA model. On Colab: `PRESET = "unified_lora_large_sd"`, `FUSION = None` (a value other than None
+overrides the preset). Decide with `scripts/compare_runs.py` against `unified_lora_large`, seeds 0 and 1, after
+`MODE = "evaluate"` on both. `--fusion` and `--cross-transform` only change new training runs; with `--run`,
+`--resume` or `--ensemble` the saved run keeps its own value and a warning is printed.
 
 **Checkpoints.** LoRA and adapter weights are saved in `best.pt` like the unfrozen blocks (every parameter with
 `requires_grad`); with `ema_decay` the file holds the averaged weights. `--run <run_id>` rebuilds the model from

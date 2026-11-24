@@ -11,7 +11,7 @@ Optimiser: AdamW (weight_decay) with OneCycleLR over all updates: warmup for war
 pair_batch: one item = one image pair with all its queries (src/pair_batch.py), one backbone pass per
     image; batches and effective batch count pairs (pair_effective_batch), the loss of an update is the
     mean over its queries, and hard_neg_weight > 1 adds hard negatives (src/models/loss.py).
-train_mode="lora": only the LoRA weights (src/models/lora.py); fusion="adapter" also trains model.fusion.
+train_mode="lora": only the LoRA weights (src/models/lora.py); fusion="adapter" / "adapter_mix" also trains model.fusion.
 ema_decay > 0: an EMA of the trained weights (src/utils/ema.py) is validated and saved as best.pt.
 Each epoch: validation PCK and its gain over the previous epoch against the 95% interval
 (history.json, W&B), best.pt when it improves, last.pt for --resume, early stop after
@@ -61,7 +61,7 @@ def configure_trainable(model, cfg):
     Block i from the top: lr_backbone * layer_decay**i. Final LayerNorm: lr_backbone.
     Head (only runs whose config has head != "none"): lr_head.
     train_mode "lora": one group with the LoRA weights (lr_lora) instead of the blocks and LayerNorm.
-    fusion "adapter": one more group with model.fusion (lr_adapter). model.sd is never trained.
+    fusion "adapter" or "adapter_mix": one more group with model.fusion (lr_adapter). model.sd is never trained.
     """
     if cfg["train_mode"] not in TRAIN_MODES:
         raise ValueError(f"train_mode must be one of {TRAIN_MODES}, got {cfg['train_mode']!r}")
@@ -103,7 +103,7 @@ def configure_trainable(model, cfg):
                         params.extend(mod.parameters())
             params.extend(model.backbone.layernorm.parameters())
         add_group("lora", params, cfg["lr_lora"])
-    if cfg["fusion"] == "adapter":
+    if cfg["fusion"] in ("adapter", "adapter_mix"):
         add_group("adapter", list(model.fusion.parameters()), cfg["lr_adapter"])
     if cfg.get("cross_transform"):
         add_group("cross_transform", list(model.cross_transform.parameters()), cfg["lr_cross"])
@@ -326,7 +326,8 @@ def train(cfg, model, run_id, run_dir, resume=False):
               f"({n_queries / len(dataset):.1f} per pair), hard_neg_weight {cfg['hard_neg_weight']}")
     print(f"{len(dataset)} training {unit}, micro-batch {micro}, effective batch "
           f"{[micro * a for a, _ in plan]} {unit} per epoch, {total_updates} updates in {cfg['epochs']} epochs")
-    warmup_updates = max(1, updates_in_epochs(plan, cfg["warmup_epochs"]))
+    # OneCycleLR divides by zero on its last step when the warmup covers every update (warmup_epochs >= epochs).
+    warmup_updates = max(1, min(updates_in_epochs(plan, cfg["warmup_epochs"]), total_updates - 1))
     temperature_updates = updates_in_epochs(plan, cfg["loss_temperature_epochs"])
     print(f"lr warmup over {warmup_updates} updates, loss temperature ramp over {temperature_updates}")
     # Other OneCycleLR arguments at their defaults: div_factor 25, final_div_factor 1e4, cosine anneal.
