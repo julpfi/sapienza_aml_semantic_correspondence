@@ -358,14 +358,15 @@ UNIFIED_LORA_LARGE = {
 }
 
 # Pure Diffusion semantic correspondence (zero DINOv2; 100% Part-2 compliant):
-# Frozen SD 2.1 multi-block DIFT ([0, 1, 2], 3200-d, 4 noise draws at eval) + 1.41M zero-init
+# Frozen SD 2.1 DIFT up_blocks[1] (1280-d, t=261, 4 noise draws at eval) + 0.92M zero-init
 # residual bottleneck adapter, trained with 92x92 adaptive marginal loss + hard_neg_weight=5 + zoom.
 SD_PURE = {
     **UNIFIED_LORA,
     "backbone": "sd",
     "train_mode": "sd_adapter",
     "fusion": "none",
-    "sd_up_blocks": [0, 1, 2],
+    "sd_up_blocks": [1],
+    "sd_timestep": 261,
     "sd_noise_samples": 4,
     "sd_out_grid": 46,
     "sd_adapter_dim": 128,
@@ -376,20 +377,20 @@ SD_PURE = {
     "warmup_epochs": 1.0,
 }
 
-# Frozen zero-shot pure-SD baseline (no training; evaluate directly to measure raw multi-block DIFT + zoom).
+# Frozen zero-shot pure-SD baseline (no training; evaluate directly to measure raw DIFT [1] t=261).
 SD_PURE_FROZEN = {
     **SD_PURE,
     "train_mode": "frozen",
 }
 
-# CleanDIFT SD 2.1 (CVPR 2025, CompVis/cleandift) — noise-free, timestep-independent pure diffusion
-# backbone (zero DINOv2; 100% Part-2 compliant; 4x faster than 4-noise DIFT) + 1.41M zero-init adapter.
+# CleanDIFT SD 2.1 (CVPR 2025, CompVis/cleandift) — noise-free pure diffusion backbone at t=261,
+# up_blocks[1] (1280-d, 1 deterministic pass) + 0.92M zero-init residual adapter.
 CLEANDIFT_PURE = {
     **SD_PURE,
     "sd_cleandift_repo": "CompVis/cleandift",
     "sd_cleandift_file": "cleandift_sd21_unet.safetensors",
     "sd_add_noise": False,
-    "sd_timestep": 0,
+    "sd_timestep": 261,
     "sd_noise_samples": 1,
 }
 

@@ -105,7 +105,7 @@ class SDFeatures(nn.Module):
         self.image_size = cfg["sd_image_size"]
         # Clamped for tiny test schedulers with fewer steps.
         self.add_noise = bool(cfg.get("sd_add_noise", True))
-        self.timestep = 0 if not self.add_noise else min(int(cfg["sd_timestep"]), scheduler.config.num_train_timesteps - 1)
+        self.timestep = min(int(cfg["sd_timestep"]), scheduler.config.num_train_timesteps - 1)
         alpha = scheduler.alphas_cumprod[self.timestep].item()
         self.noise_scale = (alpha ** 0.5, (1 - alpha) ** 0.5)
         # Stable Diffusion latent scaling factor, used when the VAE config has none
