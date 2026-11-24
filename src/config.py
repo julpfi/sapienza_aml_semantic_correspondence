@@ -119,6 +119,7 @@ BASE = {
     "init_artifact": None,             # start from a teammate's model: "<entity>/<project>/<run_id>-best:latest"
 
     # --- Model (Lang: torch.hub dinov2_vitb14 -> facebook/dinov2-base) ---
+    "backbone": "dinov2",              # "dinov2" | "sd" (pure Stable Diffusion, zero DINOv2, Part-2 compliant)
     "model_id": "facebook/dinov2-base",
     "model_revision": "f9e44c814b77203eaa57a6bdbbd535f21ede1415",  # pinned commit on the Hub
     "feature_layer": -1,               # transformer block to read (-1 = last); Lang `layer`
@@ -210,9 +211,18 @@ BASE = {
     "fusion": "none",                  # "none" (default on giuseppe branch) | "concat" | "adapter"
     "sd_model_id": "sd2-community/stable-diffusion-2-1",  # stabilityai/stable-diffusion-2-1 is no longer public
     "sd_model_revision": "bb2154823665391b4fb29b0b9cf82a198964ee05",  # Hub commit, checked 2026-11-16
+    "sd_cleandift_repo": None,         # e.g. "CompVis/cleandift" to load noise-free CleanDIFT UNet weights
+    "sd_cleandift_file": None,         # e.g. "cleandift_sd21_unet.safetensors"
+    "sd_add_noise": True,              # False for CleanDIFT (passes clean latents at t=0, zero noise)
     "sd_image_size": 736,              # SD input side; up-block 1 is 1/16 of it: 46 cells = the DINOv2 grid at 644
     "sd_timestep": 261,                # DIFT noising step
-    "sd_up_block": 1,                  # decoder block whose output is the feature map (DIFT: 1)
+    "sd_up_block": 1,                  # single decoder block when sd_up_blocks is None (DIFT: 1)
+    "sd_up_blocks": None,              # None = [sd_up_block]; e.g. [0, 1, 2] = multi-scale SD DIFT (3200-d)
+    "sd_noise_samples": 1,             # >1 averages multiple deterministic noise draws at eval (1 in train)
+    "sd_out_grid": 46,                 # feature grid side when backbone="sd" (matches 644/14 = 46)
+    "sd_adapter_dim": 128,             # bottleneck width for pure-SD residual adapter (~1.41M params at 128)
+    "sd_adapter_layers": 2,            # residual conv blocks in pure-SD adapter
+    "sd_adapter_dropout": 0.2,         # spatial Dropout2d on SD input features during training
     "sd_concat_weight": 0.5,           # weight of the SD part in "concat"
     "adapter_layers": 2,               # bottleneck blocks after the 1x1 input convolution
     "adapter_dim": 256,                # bottleneck width
@@ -290,6 +300,8 @@ V3_OFF = {
     "cross_transform": False, "object_zoom": False,
     "loss_upsample": 1, "adaptive_pos_radius": False, "lora_train_layernorm": False,
     "val_fold": None, "feature_layers": None, "csls_weight": 0.0,
+    "backbone": "dinov2", "sd_up_blocks": None, "sd_noise_samples": 1,
+    "sd_cleandift_repo": None, "sd_cleandift_file": None, "sd_add_noise": True,
 }
 
 # v2 values of the training, augmentation and fusion keys that D-008 changed. BASE updated with these = the v2 training
@@ -303,6 +315,8 @@ V2_TRAINING = {
     "cross_transform": False, "object_zoom": False,
     "loss_upsample": 1, "adaptive_pos_radius": False, "lora_train_layernorm": False,
     "val_fold": None, "feature_layers": None, "csls_weight": 0.0,
+    "backbone": "dinov2", "sd_up_blocks": None, "sd_noise_samples": 1,
+    "sd_cleandift_repo": None, "sd_cleandift_file": None, "sd_add_noise": True,
 }
 
 # Unified winners preset: lorav2 attention+MLP LoRA (less overfitting on unseen test images) +
@@ -343,9 +357,54 @@ UNIFIED_LORA_LARGE = {
     "lr_lora": 8e-5,
 }
 
+# Pure Diffusion semantic correspondence (zero DINOv2; 100% Part-2 compliant):
+# Frozen SD 2.1 multi-block DIFT ([0, 1, 2], 3200-d, 4 noise draws at eval) + 1.41M zero-init
+# residual bottleneck adapter, trained with 92x92 adaptive marginal loss + hard_neg_weight=5 + zoom.
+SD_PURE = {
+    **UNIFIED_LORA,
+    "backbone": "sd",
+    "train_mode": "sd_adapter",
+    "fusion": "none",
+    "sd_up_blocks": [0, 1, 2],
+    "sd_noise_samples": 4,
+    "sd_out_grid": 46,
+    "sd_adapter_dim": 128,
+    "sd_adapter_layers": 2,
+    "sd_adapter_dropout": 0.2,
+    "lr_adapter": 3e-4,
+    "epochs": 8,
+    "warmup_epochs": 1.0,
+}
+
+# Frozen zero-shot pure-SD baseline (no training; evaluate directly to measure raw multi-block DIFT + zoom).
+SD_PURE_FROZEN = {
+    **SD_PURE,
+    "train_mode": "frozen",
+}
+
+# CleanDIFT SD 2.1 (CVPR 2025, CompVis/cleandift) — noise-free, timestep-independent pure diffusion
+# backbone (zero DINOv2; 100% Part-2 compliant; 4x faster than 4-noise DIFT) + 1.41M zero-init adapter.
+CLEANDIFT_PURE = {
+    **SD_PURE,
+    "sd_cleandift_repo": "CompVis/cleandift",
+    "sd_cleandift_file": "cleandift_sd21_unet.safetensors",
+    "sd_add_noise": False,
+    "sd_timestep": 0,
+    "sd_noise_samples": 1,
+}
+
+CLEANDIFT_FROZEN = {
+    **CLEANDIFT_PURE,
+    "train_mode": "frozen",
+}
+
 PRESETS = {
     "unified_lora": UNIFIED_LORA,
     "unified_lora_large": UNIFIED_LORA_LARGE,
+    "sd_pure": SD_PURE,
+    "sd_pure_frozen": SD_PURE_FROZEN,
+    "cleandift_pure": CLEANDIFT_PURE,
+    "cleandift_frozen": CLEANDIFT_FROZEN,
 }
 ACTIVE_PRESET = None
 

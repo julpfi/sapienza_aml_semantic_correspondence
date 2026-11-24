@@ -49,7 +49,7 @@ from src.utils.feature_store import FeatureStore
 from src.utils.run import git_commit, seed_everything
 from src.utils.wandb_log import init_wandb
 
-TRAIN_MODES = ("frozen", "finetune", "lora")
+TRAIN_MODES = ("frozen", "finetune", "lora", "sd_adapter")
 
 
 # ---------------------------------------------------------------------------
@@ -61,6 +61,7 @@ def configure_trainable(model, cfg):
     Block i from the top: lr_backbone * layer_decay**i. Final LayerNorm: lr_backbone.
     Head (only runs whose config has head != "none"): lr_head.
     train_mode "lora": one group with the LoRA weights (lr_lora) instead of the blocks and LayerNorm.
+    train_mode "sd_adapter": frozen pure-SD backbone + lightweight residual adapter (lr_adapter).
     fusion "adapter": one more group with model.fusion (lr_adapter). model.sd is never trained.
     """
     if cfg["train_mode"] not in TRAIN_MODES:
@@ -68,18 +69,19 @@ def configure_trainable(model, cfg):
     if cfg["train_mode"] == "frozen" and cfg["fusion"] != "none":
         # The frozen path reads backbone features directly (and may cache them), so it would skip the fusion.
         raise ValueError("fusion needs train_mode 'finetune' or 'lora': the frozen path bypasses the SD features.")
-    model.backbone.freeze()
-    if cfg["train_mode"] == "finetune":
-        model.backbone.unfreeze_last(cfg["unfreeze_blocks"])
+    if model.backbone is not None:
+        model.backbone.freeze()
+        if cfg["train_mode"] == "finetune":
+            model.backbone.unfreeze_last(cfg["unfreeze_blocks"])
     for p in model.head.parameters():
         p.requires_grad_(True)
 
     if isinstance(getattr(model, "sd", None), torch.nn.Module):
         model.sd.requires_grad_(False)
 
-    blocks = list(model.backbone.blocks)
     parts = [("head", model.head, cfg["lr_head"])] if cfg["head"] != "none" else []
-    if cfg["train_mode"] != "lora":  # the LoRA weights sit inside the blocks: they get their own group
+    if model.backbone is not None and cfg["train_mode"] != "lora":
+        blocks = list(model.backbone.blocks)
         parts += [(f"block_{len(blocks) - 1 - depth}", block, cfg["lr_backbone"] * cfg["layer_decay"] ** depth)
                   for depth, block in enumerate(reversed(blocks))]
         parts.append(("layernorm", model.backbone.layernorm, cfg["lr_backbone"]))
@@ -103,6 +105,10 @@ def configure_trainable(model, cfg):
                         params.extend(mod.parameters())
             params.extend(model.backbone.layernorm.parameters())
         add_group("lora", params, cfg["lr_lora"])
+    if cfg["train_mode"] == "sd_adapter":
+        if not hasattr(model, "sd_adapter"):
+            raise ValueError("train_mode='sd_adapter' requires backbone='sd'.")
+        add_group("sd_adapter", list(model.sd_adapter.parameters()), cfg["lr_adapter"])
     if cfg["fusion"] == "adapter":
         add_group("adapter", list(model.fusion.parameters()), cfg["lr_adapter"])
     if cfg.get("cross_transform"):

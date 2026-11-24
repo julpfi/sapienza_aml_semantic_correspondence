@@ -67,6 +67,23 @@ class SDFeatures(nn.Module):
         # module is moved to another device type later.
         dtype = torch.float16 if str(resolved_device(cfg)).startswith("cuda") else torch.float32
         self.unet = _load(UNet2DConditionModel, source, revision, "unet", dtype)
+        if cfg.get("sd_cleandift_repo") and cfg.get("sd_cleandift_file"):
+            from huggingface_hub import hf_hub_download
+            from safetensors.torch import load_file
+
+            cd_dir = Path(cfg["weights_dir"]) / "cleandift"
+            local_cd = cd_dir / cfg["sd_cleandift_file"]
+            if local_cd.is_file():
+                ckpt_pth = str(local_cd)
+            else:
+                cd_dir.mkdir(parents=True, exist_ok=True)
+                ckpt_pth = hf_hub_download(repo_id=cfg["sd_cleandift_repo"],
+                                           filename=cfg["sd_cleandift_file"],
+                                           local_dir=str(cd_dir))
+            state_dict = load_file(ckpt_pth)
+            self.unet.load_state_dict(state_dict, strict=True)
+            self.unet.to(dtype)
+            print(f"Loaded CleanDIFT UNet weights from {ckpt_pth}")
         self.vae = _load(AutoencoderKL, source, revision, "vae", dtype)
         scheduler = DDPMScheduler.from_config(DDPMScheduler.load_config(source, subfolder="scheduler",
                                                                         revision=revision))
@@ -79,24 +96,30 @@ class SDFeatures(nn.Module):
             prompt = text_encoder(tokens.input_ids)[0]  # [1, 77, D]
         del text_encoder, tokenizer
 
-        self.up_block = cfg["sd_up_block"]
-        if not 0 <= self.up_block < len(self.unet.up_blocks):
-            raise ValueError(f"sd_up_block must be in [0, {len(self.unet.up_blocks)}), got {self.up_block}")
+        raw_blocks = cfg.get("sd_up_blocks")
+        self.up_blocks = sorted({int(b) for b in raw_blocks}) if raw_blocks else [int(cfg["sd_up_block"])]
+        for b in self.up_blocks:
+            if not 0 <= b < len(self.unet.up_blocks):
+                raise ValueError(f"sd_up_block must be in [0, {len(self.unet.up_blocks)}), got {b}")
+        self.stop_block = max(self.up_blocks)
         self.image_size = cfg["sd_image_size"]
         # Clamped for tiny test schedulers with fewer steps.
-        self.timestep = min(int(cfg["sd_timestep"]), scheduler.config.num_train_timesteps - 1)
+        self.add_noise = bool(cfg.get("sd_add_noise", True))
+        self.timestep = 0 if not self.add_noise else min(int(cfg["sd_timestep"]), scheduler.config.num_train_timesteps - 1)
         alpha = scheduler.alphas_cumprod[self.timestep].item()
         self.noise_scale = (alpha ** 0.5, (1 - alpha) ** 0.5)
         # Stable Diffusion latent scaling factor, used when the VAE config has none
         self.latent_scale = getattr(self.vae.config, "scaling_factor", None) or 0.18215
-        self.out_dim = list(reversed(self.unet.config.block_out_channels))[self.up_block]
+        rev_ch = list(reversed(self.unet.config.block_out_channels))
+        self.out_dim = sum(rev_ch[b] for b in self.up_blocks)
 
         vae_factor = 2 ** (len(self.vae.config.block_out_channels) - 1)
         if self.image_size % vae_factor:
             raise ValueError(f"sd_image_size {self.image_size} must be a multiple of the VAE factor {vae_factor}")
         latent = self.image_size // vae_factor
+        self.noise_samples = max(1, int(cfg.get("sd_noise_samples", 1)))
         g = torch.Generator().manual_seed(cfg.get("seed", 0))
-        noise = torch.randn(1, self.unet.config.in_channels, latent, latent, generator=g)
+        noise = torch.randn(self.noise_samples, self.unet.config.in_channels, latent, latent, generator=g)
         mean = torch.tensor(cfg["image_mean"], dtype=torch.float32).view(1, 3, 1, 1)
         std = torch.tensor(cfg["image_std"], dtype=torch.float32).view(1, 3, 1, 1)
         # Not persistent: rebuilt from cfg, never in checkpoints.
@@ -105,17 +128,23 @@ class SDFeatures(nn.Module):
         self.register_buffer("mean", mean, persistent=False)
         self.register_buffer("std", std, persistent=False)
 
-        self._captured = None
-        self.unet.up_blocks[self.up_block].register_forward_hook(self._capture)
+        self._captured = {}
+        self._eval_mode = True
+        for b in self.up_blocks:
+            self.unet.up_blocks[b].register_forward_hook(self._make_capture(b))
         self.requires_grad_(False)
         self.train(False)
 
-    def _capture(self, module, inputs, output):
-        self._captured = output
-        raise _StopForward
+    def _make_capture(self, idx):
+        def _hook(module, inputs, output):
+            self._captured[idx] = output
+            if idx == self.stop_block:
+                raise _StopForward
+        return _hook
 
     def train(self, mode=True):
-        """Always in eval mode, whatever the parent model does."""
+        """UNet/VAE always stay in eval mode; track parent mode to use 1 noise sample in train vs K in eval."""
+        self._eval_mode = not bool(mode)
         return super().train(False)
 
     def _apply(self, fn, *args, **kwargs):
@@ -136,18 +165,63 @@ class SDFeatures(nn.Module):
         rgb = (x.float() * self.std + self.mean) * 2 - 1
         rgb = F.interpolate(rgb, size=(self.image_size, self.image_size), mode="bilinear", align_corners=False)
         latents = self.vae.encode(rgb.to(p.dtype)).latent_dist.mean * self.latent_scale
-        # Same noise for every image: features do not depend on the batch or on source / target.
-        noise = self.noise.expand(x.shape[0], -1, -1, -1)
         a, b = self.noise_scale
-        noisy = (a * latents.float() + b * noise).to(p.dtype)
         t = torch.full((x.shape[0],), self.timestep, device=x.device, dtype=torch.long)
         prompt = self.prompt.expand(x.shape[0], -1, -1)
-        self._captured = None
-        try:
-            self.unet(noisy, t, encoder_hidden_states=prompt)
-        except _StopForward:
-            pass
-        feats, self._captured = self._captured.float(), None
-        if tuple(feats.shape[-2:]) != tuple(out_hw):
-            feats = F.interpolate(feats, size=tuple(out_hw), mode="bilinear", align_corners=False)
-        return F.normalize(feats, dim=1)
+        n_draws = 1 if not self.add_noise else (self.noise_samples if self._eval_mode else 1)
+
+        acc = None
+        for k in range(n_draws):
+            if self.add_noise:
+                noise = self.noise[k : k + 1].expand(x.shape[0], -1, -1, -1)
+                noisy = (a * latents.float() + b * noise).to(p.dtype)
+            else:
+                noisy = latents.to(p.dtype)
+            self._captured = {}
+            try:
+                self.unet(noisy, t, encoder_hidden_states=prompt)
+            except _StopForward:
+                pass
+            parts = []
+            for blk in self.up_blocks:
+                f = self._captured[blk].float()
+                if tuple(f.shape[-2:]) != tuple(out_hw):
+                    f = F.interpolate(f, size=tuple(out_hw), mode="bilinear", align_corners=False)
+                parts.append(F.normalize(f, dim=1))
+            self._captured = {}
+            sample_feat = F.normalize(torch.cat(parts, dim=1), dim=1) if len(parts) > 1 else parts[0]
+            acc = sample_feat if acc is None else (acc + sample_feat)
+        return F.normalize(acc, dim=1)
+
+
+class SDCorrespondenceAdapter(nn.Module):
+    """Lightweight zero-init residual bottleneck adapter on multi-block SD features [B, C, h, w].
+
+    At step 0, `out` is zero so output == frozen multi-block DIFT features exactly.
+    With in_dim=3200, hidden=128, layers=2: ~1.41M trainable parameters (ideal for 314 pairs).
+    """
+
+    def __init__(self, in_dim, hidden=128, layers=2, dropout=0.2):
+        super().__init__()
+        self.drop = nn.Dropout2d(float(dropout))
+        self.inp = nn.Conv2d(in_dim, hidden, kernel_size=1)
+        groups = 8 if hidden % 8 == 0 else 1
+        self.blocks = nn.ModuleList([
+            nn.Sequential(
+                nn.Conv2d(hidden, hidden, kernel_size=3, padding=1),
+                nn.GroupNorm(groups, hidden),
+                nn.GELU(),
+                nn.Conv2d(hidden, hidden, kernel_size=3, padding=1),
+                nn.GroupNorm(groups, hidden),
+            )
+            for _ in range(int(layers))
+        ])
+        self.out = nn.Conv2d(hidden, in_dim, kernel_size=1)
+        nn.init.zeros_(self.out.weight)
+        nn.init.zeros_(self.out.bias)
+
+    def forward(self, x):
+        h = F.gelu(self.inp(self.drop(x)))
+        for blk in self.blocks:
+            h = F.gelu(h + blk(h))
+        return F.normalize(x + self.out(h), dim=1)

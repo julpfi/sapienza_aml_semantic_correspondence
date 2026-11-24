@@ -18,21 +18,39 @@ class CorrespondenceModel(nn.Module):
     def __init__(self, cfg):
         super().__init__()
         self.cfg = cfg
-        self.backbone = DinoBackbone(cfg)
-        if cfg["train_mode"] == "lora":
-            apply_lora(self.backbone, cfg)
-        in_dim = self.backbone.out_dim
-        out_dim = in_dim if cfg["head"] == "none" or cfg.get("head_dim") is None else cfg["head_dim"]
-        self.head = ProjectionHead(cfg["head"], in_dim, out_dim)
-        # Imported only here, so fusion "none" never imports diffusers and keeps the v2 state-dict keys.
-        fusion = cfg["fusion"]
-        if fusion != "none":
-            from src.models.fusion import Fusion
-            from src.models.sd import SDFeatures
+        backbone_kind = cfg.get("backbone", "dinov2")
+        if backbone_kind == "sd":
+            from src.models.sd import SDCorrespondenceAdapter, SDFeatures
 
+            self.backbone = None
             self.sd = SDFeatures(cfg)
-            self.fusion = Fusion(fusion, out_dim, self.sd.out_dim, cfg)
-            out_dim = self.fusion.out_dim
+            self.sd_out_grid = int(cfg.get("sd_out_grid", 46))
+            in_dim = self.sd.out_dim
+            if cfg["train_mode"] == "sd_adapter":
+                self.sd_adapter = SDCorrespondenceAdapter(
+                    in_dim,
+                    hidden=int(cfg.get("sd_adapter_dim", 128)),
+                    layers=int(cfg.get("sd_adapter_layers", 2)),
+                    dropout=float(cfg.get("sd_adapter_dropout", 0.2)),
+                )
+            out_dim = in_dim if cfg["head"] == "none" or cfg.get("head_dim") is None else cfg["head_dim"]
+            self.head = ProjectionHead(cfg["head"], in_dim, out_dim)
+        else:
+            self.backbone = DinoBackbone(cfg)
+            if cfg["train_mode"] == "lora":
+                apply_lora(self.backbone, cfg)
+            in_dim = self.backbone.out_dim
+            out_dim = in_dim if cfg["head"] == "none" or cfg.get("head_dim") is None else cfg["head_dim"]
+            self.head = ProjectionHead(cfg["head"], in_dim, out_dim)
+            # Imported only here, so fusion "none" never imports diffusers and keeps the v2 state-dict keys.
+            fusion = cfg["fusion"]
+            if fusion != "none":
+                from src.models.fusion import Fusion
+                from src.models.sd import SDFeatures
+
+                self.sd = SDFeatures(cfg)
+                self.fusion = Fusion(fusion, out_dim, self.sd.out_dim, cfg)
+                out_dim = self.fusion.out_dim
         if cfg.get("cross_transform"):
             from src.models.cross_transform import CrossImageTransform
 
@@ -40,10 +58,16 @@ class CorrespondenceModel(nn.Module):
 
     @property
     def device(self):
-        return next(self.backbone.parameters()).device
+        mod = self.backbone if self.backbone is not None else self.sd
+        return next(mod.parameters()).device
 
     def forward(self, x):
         """Normalised images [B, 3, S, S] -> matching features [B, C, h, w]."""
+        if self.backbone is None:
+            feats = self.sd(x, (self.sd_out_grid, self.sd_out_grid))
+            if hasattr(self, "sd_adapter"):
+                feats = self.sd_adapter(feats)
+            return self.head(feats)
         feats = self.head(self.backbone(x))
         if hasattr(self, "fusion"):
             feats = self.fusion(feats, self.sd(x, feats.shape[-2:]))
@@ -72,8 +96,11 @@ class CorrespondenceModel(nn.Module):
 
     @torch.no_grad()
     def cls_embedding(self, img):
-        """DINOv2 CLS token [C] (L2-normalised) of one PIL image and its CLS-patch cosine map [h, w],
-        with the eval preprocessing."""
+        """Global image embedding [C] (L2-normalised) and its cosine similarity map [h, w] with patch features."""
+        if self.backbone is None:
+            feats = self(preprocess_image(img, self.cfg).to(self.device))[0]  # [C, h, w]
+            g = torch.nn.functional.normalize(feats.mean(dim=(1, 2)), dim=0)
+            return g, torch.einsum("chw,c->hw", feats, g)
         cls, cls_map = self.backbone.cls(preprocess_image(img, self.cfg).to(self.device))
         return cls[0], cls_map[0]
 
