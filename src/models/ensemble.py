@@ -38,10 +38,31 @@ class EnsembleModel(nn.Module):
     def new_cache(self):
         return self.models[0].new_cache()
 
+    @staticmethod
+    def _to_cache(t):
+        return t.detach().to(device="cpu", dtype=torch.float16)
+
+    @staticmethod
+    def _from_cache(t, device):
+        return t.to(device=device, dtype=torch.float32)
+
+    @torch.no_grad()
+    def _member_features(self, idx, img, flip=False, cache=None, key=None):
+        """Extract features [C, h, w] on GPU while storing any cached copy in CPU fp16 to save VRAM."""
+        m = self.models[idx]
+        if cache is not None and key is not None:
+            hit = cache.get((key, flip))
+            if hit is not None:
+                return self._from_cache(hit, m.device)
+        feats = m.image_features(img, flip=flip, cache=None, key=None)
+        if cache is not None and key is not None:
+            cache.put((key, flip), self._to_cache(feats))
+        return feats
+
     @torch.no_grad()
     def image_features(self, img, flip=False, cache=None, key=None):
         """Delegate to model 0 for validation_loss logging compatibility."""
-        return self.models[0].image_features(img, flip=flip, cache=cache, key=(0, key))
+        return self._member_features(0, img, flip=flip, cache=cache, key=(0, key))
 
     def _model_sim_maps(self, idx, src_feats, trg_feats, pts_orig, src_wh, cfg, flipped=False):
         """[K, H, W] (optionally CSLS-adjusted) cosine similarity maps for points [K, 2] on one member model."""
@@ -64,16 +85,16 @@ class EnsembleModel(nn.Module):
         flipped = False
         if cfg["flip_test"]:
             # Decide flip consistently from model 0 (or ensemble alignment) so all members share coordinates
-            s0 = self.models[0].image_features(src_img, cache=cache, key=(0, src_key))
-            t0 = self.models[0].image_features(trg_img, cache=cache, key=(0, trg_key))
+            s0 = self._member_features(0, src_img, cache=cache, key=(0, src_key))
+            t0 = self._member_features(0, trg_img, cache=cache, key=(0, trg_key))
             s0, t0_raw = self.models[0].pair_features(s0, t0)
-            s0_f = self.models[0].image_features(src_img, flip=True, cache=cache, key=(0, src_key))
+            s0_f = self._member_features(0, src_img, flip=True, cache=cache, key=(0, src_key))
             s0_f, _ = self.models[0].pair_features(s0_f, t0)
             _, flipped = choose_source(s0, s0_f, t0_raw)
 
         for idx, m in enumerate(self.models):
-            sf = m.image_features(src_img, flip=flipped, cache=cache, key=(idx, src_key))
-            tf = m.image_features(trg_img, cache=cache, key=(idx, trg_key))
+            sf = self._member_features(idx, src_img, flip=flipped, cache=cache, key=(idx, src_key))
+            tf = self._member_features(idx, trg_img, cache=cache, key=(idx, trg_key))
             sf, tf = m.pair_features(sf, tf)
             per_model.append((sf, tf))
         return per_model, flipped
@@ -98,7 +119,10 @@ class EnsembleModel(nn.Module):
         pair_key = ("ens_zoom", str(sample["pair_id"]), sample["src_image"], sample["trg_image"], size, bool(flipped))
         cached = cache.get(pair_key) if cache is not None else None
         if cached is not None:
-            sbox, tbox, stage2_feats, ctx_xy = cached
+            sbox, tbox, stage2_cached, ctx_xy = cached
+            stage2_feats = [(self._from_cache(sf2, self.models[idx].device),
+                             self._from_cache(tf2, self.models[idx].device))
+                            for idx, (sf2, tf2) in enumerate(stage2_cached)]
         else:
             ctx_xy = load_pair_source_xy(cfg, sample["pair_id"], fallback_xy=sample["src_xy"][None])
             sims1_ctx = [self._model_sim_maps(i, sf, tf, ctx_xy, src_wh, cfg, flipped)
@@ -119,14 +143,15 @@ class EnsembleModel(nn.Module):
             else:
                 stage2_feats = []
                 for idx, m in enumerate(self.models):
-                    sf2 = stage1_feats[idx][0] if full_src else m.image_features(
-                        s_crop, flip=flipped, cache=cache, key=(idx, "zoom_src", str(sample["pair_id"]), sbox, size))
-                    tf2 = stage1_feats[idx][1] if full_trg else m.image_features(
-                        t_crop, cache=cache, key=(idx, "zoom_trg", str(sample["pair_id"]), tbox, size))
+                    sf2 = stage1_feats[idx][0] if full_src else self._member_features(
+                        idx, s_crop, flip=flipped, cache=cache, key=(idx, "zoom_src", str(sample["pair_id"]), sbox, size))
+                    tf2 = stage1_feats[idx][1] if full_trg else self._member_features(
+                        idx, t_crop, cache=cache, key=(idx, "zoom_trg", str(sample["pair_id"]), tbox, size))
                     sf2, tf2 = m.pair_features(sf2, tf2)
                     stage2_feats.append((sf2, tf2))
             if cache is not None:
-                cache.put(pair_key, (sbox, tbox, stage2_feats, ctx_xy))
+                stage2_cached = [(self._to_cache(sf2), self._to_cache(tf2)) for sf2, tf2 in stage2_feats]
+                cache.put(pair_key, (sbox, tbox, stage2_cached, ctx_xy))
 
         sc_wh = (sbox[2] - sbox[0], sbox[3] - sbox[1])
         tc_wh = (tbox[2] - tbox[0], tbox[3] - tbox[1])
