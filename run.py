@@ -65,6 +65,8 @@ def parse_args(argv=None):
 
 
 def _apply_cli_overrides(cfg, args):
+    old_img_size = int(cfg["image_size"])
+    old_sd_grid = int(cfg.get("sd_out_grid", 46))
     for attr, key in (("image_size", "image_size"), ("soft_window", "soft_window"),
                       ("soft_temperature", "soft_temperature"), ("flip_test", "flip_test"),
                       ("object_zoom", "object_zoom"), ("cross_transform", "cross_transform"),
@@ -72,6 +74,10 @@ def _apply_cli_overrides(cfg, args):
         val = getattr(args, attr)
         if val is not None:
             cfg[key] = val
+    if args.image_size is not None and cfg.get("backbone") == "sd":
+        new_size = int(args.image_size)
+        cfg["sd_image_size"] = new_size
+        cfg["sd_out_grid"] = max(1, round(old_sd_grid * new_size / max(old_img_size, 1)))
     if args.val_fold is not None:
         if args.val_fold < 0:
             cfg["val_fold"] = None

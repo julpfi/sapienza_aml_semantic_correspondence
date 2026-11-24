@@ -66,7 +66,8 @@ class EnsembleModel(nn.Module):
 
     def _model_sim_maps(self, idx, src_feats, trg_feats, pts_orig, src_wh, cfg, flipped=False):
         """[K, H, W] (optionally CSLS-adjusted) cosine similarity maps for points [K, 2] on one member model."""
-        return compute_similarity_map(src_feats, trg_feats, pts_orig, src_wh, cfg, flipped)
+        m_cfg = {**cfg, "feat_upsample": self.models[idx].cfg.get("feat_upsample", cfg["feat_upsample"])}
+        return compute_similarity_map(src_feats, trg_feats, pts_orig, src_wh, m_cfg, flipped)
 
     def _combine_sims(self, sims):
         """Weighted average of [K, H_i, W_i] similarity maps (resizing if grids differ)."""

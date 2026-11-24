@@ -217,12 +217,14 @@ BASE = {
     "sd_image_size": 736,              # SD input side; up-block 1 is 1/16 of it: 46 cells = the DINOv2 grid at 644
     "sd_timestep": 261,                # DIFT noising step
     "sd_up_block": 1,                  # single decoder block when sd_up_blocks is None (DIFT: 1)
-    "sd_up_blocks": None,              # None = [sd_up_block]; e.g. [0, 1, 2] = multi-scale SD DIFT (3200-d)
+    "sd_up_blocks": None,              # None = [sd_up_block]; e.g. [0, 1, 2] = multi-scale SD DIFT
+    "sd_mid_block": False,             # True = also capture UNet mid_block (global self-attention)
     "sd_noise_samples": 1,             # >1 averages multiple deterministic noise draws at eval (1 in train)
-    "sd_out_grid": 46,                 # feature grid side when backbone="sd" (matches 644/14 = 46)
-    "sd_adapter_dim": 128,             # bottleneck width for pure-SD residual adapter (~1.41M params at 128)
-    "sd_adapter_layers": 2,            # residual conv blocks in pure-SD adapter
-    "sd_adapter_dropout": 0.2,         # spatial Dropout2d on SD input features during training
+    "sd_out_grid": 46,                 # feature grid side when backbone="sd"
+    "sd_proj_dim": 256,                # output descriptor dim of SDHyperfeatureAdapter
+    "sd_adapter_dim": 96,              # bottleneck width inside SDHyperfeatureAdapter
+    "sd_adapter_dropout": 0.15,        # spatial Dropout2d inside SDHyperfeatureAdapter
+    "sd_mix_init": None,               # optional initial logits for learned per-block softmax mixing
     "sd_concat_weight": 0.5,           # weight of the SD part in "concat"
     "adapter_layers": 2,               # bottleneck blocks after the 1x1 input convolution
     "adapter_dim": 256,                # bottleneck width
@@ -300,8 +302,9 @@ V3_OFF = {
     "cross_transform": False, "object_zoom": False,
     "loss_upsample": 1, "adaptive_pos_radius": False, "lora_train_layernorm": False,
     "val_fold": None, "feature_layers": None, "csls_weight": 0.0,
-    "backbone": "dinov2", "sd_up_blocks": None, "sd_noise_samples": 1,
+    "backbone": "dinov2", "sd_up_blocks": None, "sd_mid_block": False, "sd_noise_samples": 1,
     "sd_cleandift_repo": None, "sd_cleandift_file": None, "sd_add_noise": True,
+    "sd_proj_dim": 256, "sd_mix_init": None,
 }
 
 # v2 values of the training, augmentation and fusion keys that D-008 changed. BASE updated with these = the v2 training
@@ -315,8 +318,9 @@ V2_TRAINING = {
     "cross_transform": False, "object_zoom": False,
     "loss_upsample": 1, "adaptive_pos_radius": False, "lora_train_layernorm": False,
     "val_fold": None, "feature_layers": None, "csls_weight": 0.0,
-    "backbone": "dinov2", "sd_up_blocks": None, "sd_noise_samples": 1,
+    "backbone": "dinov2", "sd_up_blocks": None, "sd_mid_block": False, "sd_noise_samples": 1,
     "sd_cleandift_repo": None, "sd_cleandift_file": None, "sd_add_noise": True,
+    "sd_proj_dim": 256, "sd_mix_init": None,
 }
 
 # Unified winners preset: lorav2 attention+MLP LoRA (less overfitting on unseen test images) +
@@ -357,46 +361,65 @@ UNIFIED_LORA_LARGE = {
     "lr_lora": 8e-5,
 }
 
-# Pure Diffusion semantic correspondence (zero DINOv2; 100% Part-2 compliant):
-# Frozen SD 2.1 DIFT up_blocks[1] (1280-d, t=261, 4 noise draws at eval) + 0.92M zero-init
-# residual bottleneck adapter, trained with 92x92 adaptive marginal loss + hard_neg_weight=5 + zoom.
+# Pure Diffusion Hyperfeatures (zero DINOv2; 100% Part-2 compliant):
+# Native 768x768 SD 2.1 multi-scale features (mid_block + up_blocks[0, 1, 2]: 12x12, 24x24, 48x48, 96x96)
+# aggregated via orthogonal 1x1 stems + native-scale residual bottlenecks into a clean 256-d 96x96 descriptor map.
 SD_PURE = {
     **UNIFIED_LORA,
     "backbone": "sd",
     "train_mode": "sd_adapter",
     "fusion": "none",
-    "sd_up_blocks": [1],
+    "image_size": 768,
+    "sd_image_size": 768,
+    "sd_mid_block": True,
+    "sd_up_blocks": [0, 1, 2],
     "sd_timestep": 261,
     "sd_noise_samples": 4,
-    "sd_out_grid": 46,
-    "sd_adapter_dim": 128,
-    "sd_adapter_layers": 2,
-    "sd_adapter_dropout": 0.2,
-    "lr_adapter": 3e-4,
+    "sd_out_grid": 96,
+    "sd_proj_dim": 256,
+    "sd_adapter_dim": 96,
+    "sd_adapter_dropout": 0.15,
+    "sd_mix_init": [-0.7, -0.3, 0.7, 0.3],  # [mid, up0, up1, up2] -> softmax [0.12, 0.18, 0.43, 0.27]
+    "lr_adapter": 1e-3,
     "epochs": 8,
     "warmup_epochs": 1.0,
+    "feat_upsample": 1,
+    "loss_upsample": 1,
+    "marginal_radius": 2.0,
+    "hard_neg_radius": 2.0,
+    "hard_neg_exclusion": 4.0,
+    "zoom_stage1_weight": 0.15,
 }
 
-# Frozen zero-shot pure-SD baseline (no training; evaluate directly to measure raw DIFT [1] t=261).
+# Frozen zero-shot pure-SD baseline (single-block up_blocks[1] at 768px -> 48x48, 2x upsampled to 96x96).
 SD_PURE_FROZEN = {
     **SD_PURE,
     "train_mode": "frozen",
+    "sd_mid_block": False,
+    "sd_up_blocks": [1],
+    "sd_out_grid": 48,
+    "feat_upsample": 2,
 }
 
-# CleanDIFT SD 2.1 (CVPR 2025, CompVis/cleandift) — noise-free pure diffusion backbone at t=261,
-# up_blocks[1] (1280-d, 1 deterministic pass) + 0.92M zero-init residual adapter.
-CLEANDIFT_PURE = {
+# CleanDIFT Hyperfeatures (CVPR 2025, CompVis/cleandift + NeurIPS 2023 Diffusion Hyperfeatures):
+# Noise-free, single-pass multi-scale SD 2.1 (mid_block + up_blocks[0, 1, 2]) projected into a clean
+# 256-d 96x96 metric descriptor space with learned multi-scale mixing + 2-stage zoom fallback guard.
+CLEANDIFT_HYPER = {
     **SD_PURE,
     "sd_cleandift_repo": "CompVis/cleandift",
     "sd_cleandift_file": "cleandift_sd21_unet.safetensors",
     "sd_add_noise": False,
-    "sd_timestep": 261,
+    "sd_timestep": 0,
     "sd_noise_samples": 1,
 }
 
 CLEANDIFT_FROZEN = {
-    **CLEANDIFT_PURE,
+    **CLEANDIFT_HYPER,
     "train_mode": "frozen",
+    "sd_mid_block": False,
+    "sd_up_blocks": [1],
+    "sd_out_grid": 48,
+    "feat_upsample": 2,
 }
 
 PRESETS = {
@@ -404,7 +427,7 @@ PRESETS = {
     "unified_lora_large": UNIFIED_LORA_LARGE,
     "sd_pure": SD_PURE,
     "sd_pure_frozen": SD_PURE_FROZEN,
-    "cleandift_pure": CLEANDIFT_PURE,
+    "cleandift_hyper": CLEANDIFT_HYPER,
     "cleandift_frozen": CLEANDIFT_FROZEN,
 }
 ACTIVE_PRESET = None

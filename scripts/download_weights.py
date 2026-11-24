@@ -11,6 +11,7 @@ When a folder exists (SD: with its marker), the model loads from it instead of t
 weights/ as a dataset and attach it (see RUN.md).
 """
 
+import argparse
 import sys
 from pathlib import Path
 
@@ -26,29 +27,46 @@ SD_FILES = ["model_index.json", "scheduler/*", "tokenizer/*", "*/config.json", "
             "unet/diffusion_pytorch_model.fp16.safetensors", "vae/diffusion_pytorch_model.fp16.safetensors"]
 
 
-def main():
-    cfg = get_config()
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--preset", default=None, help="Optional config preset from src/config.py")
+    args = parser.parse_args(argv)
+
+    cfg = get_config(preset=args.preset)
     load_secrets()
 
-    from huggingface_hub import snapshot_download
+    from huggingface_hub import hf_hub_download, snapshot_download
 
-    target = local_model_dir(cfg)
-    path = snapshot_download(repo_id=cfg["model_id"], revision=cfg["model_revision"], local_dir=target,
-                             allow_patterns=["*.json", "*.safetensors", "*.txt", "*.md"])
-    print(f"{cfg['model_id']}@{cfg['model_revision']} -> {path}")
+    if cfg.get("backbone", "dinov2") == "dinov2":
+        target = local_model_dir(cfg)
+        path = snapshot_download(repo_id=cfg["model_id"], revision=cfg["model_revision"], local_dir=target,
+                                 allow_patterns=["*.json", "*.safetensors", "*.txt", "*.md"])
+        print(f"{cfg['model_id']}@{cfg['model_revision']} -> {path}")
 
-    if cfg["fusion"] == "none":
+    need_sd = cfg["fusion"] != "none" or cfg.get("backbone") == "sd"
+    if not need_sd:
         return
     sd_dir = local_sd_dir(cfg)
     marker = sd_dir / SD_COMPLETE_MARKER
     if local_sd_ready(cfg):
         print(f"{cfg['sd_model_id']}@{cfg['sd_model_revision']} already in {sd_dir}")
-        return
-    marker.unlink(missing_ok=True)
-    path = snapshot_download(repo_id=cfg["sd_model_id"], revision=cfg["sd_model_revision"], local_dir=sd_dir,
-                             allow_patterns=SD_FILES)
-    marker.write_text(cfg["sd_model_revision"] + "\n")
-    print(f"{cfg['sd_model_id']}@{cfg['sd_model_revision']} -> {path}")
+    else:
+        marker.unlink(missing_ok=True)
+        path = snapshot_download(repo_id=cfg["sd_model_id"], revision=cfg["sd_model_revision"], local_dir=sd_dir,
+                                 allow_patterns=SD_FILES)
+        marker.write_text(cfg["sd_model_revision"] + "\n")
+        print(f"{cfg['sd_model_id']}@{cfg['sd_model_revision']} -> {path}")
+
+    if cfg.get("sd_cleandift_repo") and cfg.get("sd_cleandift_file"):
+        cd_dir = Path(cfg["weights_dir"]) / "cleandift"
+        local_cd = cd_dir / cfg["sd_cleandift_file"]
+        if local_cd.is_file():
+            print(f"{cfg['sd_cleandift_repo']}/{cfg['sd_cleandift_file']} already in {cd_dir}")
+        else:
+            cd_dir.mkdir(parents=True, exist_ok=True)
+            ckpt = hf_hub_download(repo_id=cfg["sd_cleandift_repo"], filename=cfg["sd_cleandift_file"],
+                                   local_dir=str(cd_dir))
+            print(f"{cfg['sd_cleandift_repo']}/{cfg['sd_cleandift_file']} -> {ckpt}")
 
 
 if __name__ == "__main__":

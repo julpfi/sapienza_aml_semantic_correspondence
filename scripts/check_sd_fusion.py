@@ -158,6 +158,37 @@ def main():
     check("sd: .half() on CPU keeps fp32 weights", all(p.dtype == torch.float32 for p in fresh.sd.parameters())
           and fresh.sd.prompt.dtype == torch.float32)
 
+    # 8. Pure-SD Hyperfeature aggregator (backbone="sd", train_mode="sd_adapter", mid_block + multi-block).
+    hyper_cfg = make_cfg(
+        backbone="sd", train_mode="sd_adapter", fusion="none", cross_transform=False,
+        sd_mid_block=True, sd_up_blocks=[0, 1], sd_add_noise=False, sd_out_grid=16,
+        sd_proj_dim=64, sd_adapter_dim=32, sd_adapter_dropout=0.0, sd_mix_init=[-0.5, 0.2, 0.3],
+    )
+    hyper_model = build_model(hyper_cfg)
+    check("hyper: backbone is None and sd_adapter present",
+          hyper_model.backbone is None and hasattr(hyper_model, "sd_adapter"))
+    ms = hyper_model.sd.forward_multiscale(x)
+    check("hyper: forward_multiscale captures mid + 2 up_blocks", len(ms) == 3)
+    h_out = hyper_model(x)
+    check("hyper: output shape [B, sd_proj_dim, grid, grid]", tuple(h_out.shape) == (2, 64, 16, 16),
+          f"{tuple(h_out.shape)}")
+    check("hyper: unit L2 norm", (h_out.norm(dim=1) - 1).abs().max().item() < 1e-5)
+    hyper_model.sd_adapter.requires_grad_(True)
+    hyper_model.train()
+    h_train = hyper_model(x)
+    (h_train * torch.randn_like(h_train)).sum().backward()
+    has_grads = (
+        hyper_model.sd_adapter.stems[0].weight.grad is not None
+        and hyper_model.sd_adapter.branches[0].up.weight.grad is not None
+        and hyper_model.sd_adapter.mix_logits.grad is not None
+        and hyper_model.sd_adapter.post.up.weight.grad is not None
+    )
+    check("hyper: stems, branches, mix_logits, and post receive gradients", has_grads)
+    hyper_model.eval()
+    h_state = trainable_state(hyper_model)
+    check("hyper: checkpoint saves only sd_adapter.* keys",
+          bool(h_state) and all(k.startswith("sd_adapter.") for k in h_state), f"({len(h_state)} keys)")
+
     print(f"\n{len(failures)} failure(s)" + (f": {failures}" if failures else ""))
     sys.exit(1 if failures else 0)
 

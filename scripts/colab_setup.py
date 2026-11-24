@@ -93,6 +93,7 @@ def mount_drive():
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--branch", default="v1")
+    parser.add_argument("--preset", default=None)
     parser.add_argument("--no-pull", action="store_true")
     parser.add_argument("--no-install", action="store_true")
     parser.add_argument("--no-drive", action="store_true")
@@ -112,7 +113,10 @@ def main(argv=None):
     if not args.no_data:
         run([sys.executable, "scripts/kaggle_io.py", "download"])
     if not args.no_weights:
-        run([sys.executable, "scripts/download_weights.py"])
+        dl_cmd = [sys.executable, "scripts/download_weights.py"]
+        if args.preset and args.preset != "none":
+            dl_cmd += ["--preset", args.preset]
+        run(dl_cmd)
     print("Colab setup complete.")
 
 

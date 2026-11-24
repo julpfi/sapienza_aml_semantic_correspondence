@@ -101,6 +101,7 @@ class SDFeatures(nn.Module):
         for b in self.up_blocks:
             if not 0 <= b < len(self.unet.up_blocks):
                 raise ValueError(f"sd_up_block must be in [0, {len(self.unet.up_blocks)}), got {b}")
+        self.use_mid_block = bool(cfg.get("sd_mid_block", False))
         self.stop_block = max(self.up_blocks)
         self.image_size = cfg["sd_image_size"]
         # Clamped for tiny test schedulers with fewer steps.
@@ -111,7 +112,10 @@ class SDFeatures(nn.Module):
         # Stable Diffusion latent scaling factor, used when the VAE config has none
         self.latent_scale = getattr(self.vae.config, "scaling_factor", None) or 0.18215
         rev_ch = list(reversed(self.unet.config.block_out_channels))
-        self.out_dim = sum(rev_ch[b] for b in self.up_blocks)
+        mid_ch = int(self.unet.config.block_out_channels[-1])
+        self.block_keys = (["mid"] if self.use_mid_block else []) + list(self.up_blocks)
+        self.block_dims = ([mid_ch] if self.use_mid_block else []) + [int(rev_ch[b]) for b in self.up_blocks]
+        self.out_dim = sum(self.block_dims)
 
         vae_factor = 2 ** (len(self.vae.config.block_out_channels) - 1)
         if self.image_size % vae_factor:
@@ -130,6 +134,8 @@ class SDFeatures(nn.Module):
 
         self._captured = {}
         self._eval_mode = True
+        if self.use_mid_block:
+            self.unet.mid_block.register_forward_hook(self._make_capture("mid"))
         for b in self.up_blocks:
             self.unet.up_blocks[b].register_forward_hook(self._make_capture(b))
         self.requires_grad_(False)
@@ -160,17 +166,19 @@ class SDFeatures(nn.Module):
         return self
 
     @torch.no_grad()
-    def forward(self, x, out_hw):
+    def _extract_raw_blocks(self, x):
+        """Run VAE + UNet once per noise draw; yield dict {block_key: float32 tensor} per draw."""
         p = next(self.unet.parameters())
         rgb = (x.float() * self.std + self.mean) * 2 - 1
-        rgb = F.interpolate(rgb, size=(self.image_size, self.image_size), mode="bilinear", align_corners=False)
+        if tuple(rgb.shape[-2:]) != (self.image_size, self.image_size):
+            rgb = F.interpolate(rgb, size=(self.image_size, self.image_size), mode="bilinear", align_corners=False)
         latents = self.vae.encode(rgb.to(p.dtype)).latent_dist.mean * self.latent_scale
         a, b = self.noise_scale
         t = torch.full((x.shape[0],), self.timestep, device=x.device, dtype=torch.long)
         prompt = self.prompt.expand(x.shape[0], -1, -1)
         n_draws = 1 if not self.add_noise else (self.noise_samples if self._eval_mode else 1)
 
-        acc = None
+        draws = []
         for k in range(n_draws):
             if self.add_noise:
                 noise = self.noise[k : k + 1].expand(x.shape[0], -1, -1, -1)
@@ -182,46 +190,111 @@ class SDFeatures(nn.Module):
                 self.unet(noisy, t, encoder_hidden_states=prompt)
             except _StopForward:
                 pass
-            parts = []
-            for blk in self.up_blocks:
-                f = self._captured[blk].float()
-                if tuple(f.shape[-2:]) != tuple(out_hw):
-                    f = F.interpolate(f, size=tuple(out_hw), mode="bilinear", align_corners=False)
-                parts.append(F.normalize(f, dim=1))
+            draws.append({key: self._captured[key].float() for key in self.block_keys})
             self._captured = {}
+        return draws
+
+    @torch.no_grad()
+    def forward_multiscale(self, x):
+        """Extract list of L2-normalised float32 block feature maps [B, C_b, H_b, W_b] at native scales."""
+        draws = self._extract_raw_blocks(x)
+        accs = [None] * len(self.block_keys)
+        for captured in draws:
+            for i, key in enumerate(self.block_keys):
+                f = F.normalize(captured[key], dim=1)
+                accs[i] = f if accs[i] is None else (accs[i] + f)
+        return [F.normalize(f, dim=1) if len(draws) > 1 else f for f in accs]
+
+    @torch.no_grad()
+    def forward(self, x, out_hw):
+        target_hw = tuple(out_hw)
+        acc = None
+        for captured in self._extract_raw_blocks(x):
+            parts = []
+            for key in self.block_keys:
+                f = captured[key]
+                if tuple(f.shape[-2:]) != target_hw:
+                    f = F.interpolate(f, size=target_hw, mode="bilinear", align_corners=False)
+                parts.append(F.normalize(f, dim=1))
             sample_feat = F.normalize(torch.cat(parts, dim=1), dim=1) if len(parts) > 1 else parts[0]
             acc = sample_feat if acc is None else (acc + sample_feat)
         return F.normalize(acc, dim=1)
 
 
-class SDCorrespondenceAdapter(nn.Module):
-    """Lightweight zero-init residual bottleneck adapter on multi-block SD features [B, C, h, w].
+class _LayerNorm2d(nn.Module):
+    """Pointwise channel LayerNorm for [B, C, H, W] (crop-size and batch-size invariant)."""
 
-    At step 0, `out` is zero so output == frozen multi-block DIFT features exactly.
-    With in_dim=3200, hidden=128, layers=2: ~1.41M trainable parameters (ideal for 314 pairs).
-    """
-
-    def __init__(self, in_dim, hidden=128, layers=2, dropout=0.2):
+    def __init__(self, channels, eps=1e-6):
         super().__init__()
-        self.drop = nn.Dropout2d(float(dropout))
-        self.inp = nn.Conv2d(in_dim, hidden, kernel_size=1)
-        groups = 8 if hidden % 8 == 0 else 1
-        self.blocks = nn.ModuleList([
-            nn.Sequential(
-                nn.Conv2d(hidden, hidden, kernel_size=3, padding=1),
-                nn.GroupNorm(groups, hidden),
-                nn.GELU(),
-                nn.Conv2d(hidden, hidden, kernel_size=3, padding=1),
-                nn.GroupNorm(groups, hidden),
-            )
-            for _ in range(int(layers))
-        ])
-        self.out = nn.Conv2d(hidden, in_dim, kernel_size=1)
-        nn.init.zeros_(self.out.weight)
-        nn.init.zeros_(self.out.bias)
+        self.norm = nn.LayerNorm(int(channels), eps=eps)
 
     def forward(self, x):
-        h = F.gelu(self.inp(self.drop(x)))
-        for blk in self.blocks:
-            h = F.gelu(h + blk(h))
-        return F.normalize(x + self.out(h), dim=1)
+        return self.norm(x.permute(0, 2, 3, 1)).permute(0, 3, 1, 2)
+
+
+class _HyperBottleneck(nn.Module):
+    """Pre-norm residual bottleneck [B, C, H, W] -> [B, C, H, W] with zero-init output projection."""
+
+    def __init__(self, dim, hidden, dropout=0.0):
+        super().__init__()
+        dim, hidden = int(dim), int(hidden)
+        groups = 4 if hidden % 4 == 0 else 1
+        self.norm1 = _LayerNorm2d(dim)
+        self.down = nn.Conv2d(dim, hidden, kernel_size=1)
+        self.conv = nn.Conv2d(hidden, hidden, kernel_size=3, padding=1, groups=groups)
+        self.norm2 = _LayerNorm2d(hidden)
+        self.drop = nn.Dropout2d(float(dropout)) if dropout > 0 else nn.Identity()
+        self.up = nn.Conv2d(hidden, dim, kernel_size=1)
+        nn.init.zeros_(self.up.weight)
+        nn.init.zeros_(self.up.bias)
+
+    def forward(self, x):
+        h = F.gelu(self.down(self.norm1(x)))
+        h = F.gelu(self.norm2(self.conv(h)))
+        return x + self.up(self.drop(h))
+
+
+class SDHyperfeatureAdapter(nn.Module):
+    """Multi-scale Diffusion Hyperfeature aggregator (Luo et al. 2023 / GeoAware-SC).
+
+    Projects each frozen UNet block [B, C_b, H_b, W_b] into a clean `out_dim` descriptor space
+    via an orthogonal-initialised 1x1 stem + native-scale residual bottleneck, aligns all scales
+    to `out_hw`, fuses them with learned softmax weights, refines post-fusion, and L2-normalises.
+    """
+
+    def __init__(self, block_dims, out_dim=256, hidden=96, dropout=0.15, init_logits=None):
+        super().__init__()
+        if not block_dims:
+            raise ValueError("block_dims must be non-empty")
+        import math
+
+        self.out_dim = int(out_dim)
+        self.drop_in = nn.Dropout2d(float(dropout)) if dropout > 0 else nn.Identity()
+        self.stems = nn.ModuleList()
+        self.branches = nn.ModuleList()
+        for in_dim in block_dims:
+            in_dim = int(in_dim)
+            stem = nn.Conv2d(in_dim, self.out_dim, kernel_size=1, bias=True)
+            nn.init.orthogonal_(stem.weight, gain=math.sqrt(max(in_dim / self.out_dim, 1.0)))
+            nn.init.zeros_(stem.bias)
+            self.stems.append(stem)
+            self.branches.append(_HyperBottleneck(self.out_dim, int(hidden), dropout=dropout))
+
+        if init_logits is not None and len(init_logits) == len(block_dims):
+            logits = torch.tensor(list(init_logits), dtype=torch.float32)
+        else:
+            logits = torch.zeros(len(block_dims), dtype=torch.float32)
+        self.mix_logits = nn.Parameter(logits)
+        self.post = _HyperBottleneck(self.out_dim, int(hidden) * 2, dropout=dropout)
+
+    def forward(self, block_feats, out_hw):
+        weights = F.softmax(self.mix_logits, dim=0)
+        target_hw = tuple(out_hw)
+        fused = None
+        for i, feat in enumerate(block_feats):
+            h = self.branches[i](self.stems[i](self.drop_in(feat)))
+            if tuple(h.shape[-2:]) != target_hw:
+                h = F.interpolate(h, size=target_hw, mode="bilinear", align_corners=False)
+            h = F.normalize(h, dim=1)
+            fused = weights[i] * h if fused is None else (fused + weights[i] * h)
+        return F.normalize(self.post(fused), dim=1)

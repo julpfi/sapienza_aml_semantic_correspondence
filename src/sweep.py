@@ -20,9 +20,16 @@ from src.models.matching import choose_source, predict_from_features
 MATCHING_KEYS = ("flip_test", "soft_window", "soft_temperature")
 
 
+def _active_model_id(cfg):
+    if cfg.get("backbone") == "sd":
+        return cfg.get("sd_cleandift_repo") or cfg["sd_model_id"]
+    return cfg["model_id"]
+
+
 def sweep_grid(cfg):
     """[(model_id, image_size)] and [{flip_test, soft_window, soft_temperature}] to evaluate."""
-    features = [(m, s) for m in (cfg["sweep_model_id"] or [cfg["model_id"]])
+    base_model = _active_model_id(cfg)
+    features = [(m, s) for m in (cfg["sweep_model_id"] or [base_model])
                 for s in (cfg["sweep_image_size"] or [cfg["image_size"]])]
     values = [cfg[f"sweep_{k}"] or [cfg[k]] for k in MATCHING_KEYS]
     matching = [dict(zip(MATCHING_KEYS, combo)) for combo in itertools.product(*values)]
@@ -31,8 +38,16 @@ def sweep_grid(cfg):
 
 def feature_config(cfg, model_id, image_size):
     fcfg = deepcopy(cfg)
+    base_model = _active_model_id(cfg)
+    if cfg.get("backbone") == "sd":
+        old_size = int(cfg["image_size"])
+        old_grid = int(cfg.get("sd_out_grid", 46))
+        fcfg["image_size"] = image_size
+        fcfg["sd_image_size"] = image_size
+        fcfg["sd_out_grid"] = max(1, round(old_grid * image_size / max(old_size, 1)))
+        return fcfg
     fcfg["model_id"], fcfg["image_size"] = model_id, image_size
-    if model_id != cfg["model_id"]:
+    if model_id != base_model:
         fcfg["model_revision"] = cfg["sweep_model_revisions"].get(model_id) or "main"
         fcfg["head_dim"] = None  # a fresh model: identity head, i.e. its zero-shot features
     return fcfg
@@ -44,8 +59,9 @@ def _score_setting(fcfg, model, dataset, matching, cache, verbose):
     meters = {i: PCKMeter(fcfg) for i in range(len(matching))}
     need_flip = any(m["flip_test"] for m in matching)
     by_pair = dataset.df.groupby(fcfg["csv_columns"]["pair_id"], sort=False).indices
+    label = _active_model_id(fcfg).split("/")[-1]
     for indices in tqdm(list(by_pair.values()), disable=not verbose,
-                        desc=f"sweep {fcfg['model_id'].split('/')[-1]} @ {fcfg['image_size']}"):
+                        desc=f"sweep {label} @ {fcfg['image_size']}"):
         samples = [dataset[i] for i in indices]
         first = samples[0]
         src = model.image_features(first["src_img"], cache=cache, key=first["src_image"])
@@ -83,19 +99,27 @@ def run_sweep(cfg, model, device, cache=None, verbose=True):
     dataset = build_dataset(cfg, "val")
     key = f"pck@{cfg['pck_alpha']}"
     rows = []
+    base_model = _active_model_id(cfg)
     for model_id, image_size in features:
         fcfg = feature_config(cfg, model_id, image_size)
-        same_features = (model_id, image_size) == (cfg["model_id"], cfg["image_size"])
-        if model_id == cfg["model_id"]:
+        same_features = (model_id, image_size) == (base_model, cfg["image_size"])
+        if model_id == base_model:
             sweep_model, saved_cfg = model, model.cfg
             sweep_model.cfg = fcfg  # image_features() reads image_size from model.cfg
+            if hasattr(sweep_model, "sd") and sweep_model.sd is not None:
+                saved_sd_size = sweep_model.sd.image_size
+                sweep_model.sd.image_size = fcfg["sd_image_size"]
+            else:
+                saved_sd_size = None
         else:
-            sweep_model, saved_cfg = build_model(fcfg, device), None
+            sweep_model, saved_cfg, saved_sd_size = build_model(fcfg, device), None, None
         try:
             meters = _score_setting(fcfg, sweep_model, dataset, matching, cache if same_features else None, verbose)
         finally:
             if saved_cfg is not None:
                 model.cfg = saved_cfg
+            if saved_sd_size is not None:
+                model.sd.image_size = saved_sd_size
         for i, setting in enumerate(matching):
             summary = meters[i].summary()
             rows.append({"model_id": model_id, "image_size": image_size, **setting,

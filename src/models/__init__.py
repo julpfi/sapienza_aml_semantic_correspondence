@@ -20,19 +20,22 @@ class CorrespondenceModel(nn.Module):
         self.cfg = cfg
         backbone_kind = cfg.get("backbone", "dinov2")
         if backbone_kind == "sd":
-            from src.models.sd import SDCorrespondenceAdapter, SDFeatures
+            from src.models.sd import SDFeatures, SDHyperfeatureAdapter
 
             self.backbone = None
             self.sd = SDFeatures(cfg)
             self.sd_out_grid = int(cfg.get("sd_out_grid", 46))
-            in_dim = self.sd.out_dim
             if cfg["train_mode"] == "sd_adapter":
-                self.sd_adapter = SDCorrespondenceAdapter(
-                    in_dim,
-                    hidden=int(cfg.get("sd_adapter_dim", 128)),
-                    layers=int(cfg.get("sd_adapter_layers", 2)),
-                    dropout=float(cfg.get("sd_adapter_dropout", 0.2)),
+                self.sd_adapter = SDHyperfeatureAdapter(
+                    self.sd.block_dims,
+                    out_dim=int(cfg.get("sd_proj_dim", 256)),
+                    hidden=int(cfg.get("sd_adapter_dim", 96)),
+                    dropout=float(cfg.get("sd_adapter_dropout", 0.15)),
+                    init_logits=cfg.get("sd_mix_init"),
                 )
+                in_dim = self.sd_adapter.out_dim
+            else:
+                in_dim = self.sd.out_dim
             out_dim = in_dim if cfg["head"] == "none" or cfg.get("head_dim") is None else cfg["head_dim"]
             self.head = ProjectionHead(cfg["head"], in_dim, out_dim)
         else:
@@ -64,9 +67,12 @@ class CorrespondenceModel(nn.Module):
     def forward(self, x):
         """Normalised images [B, 3, S, S] -> matching features [B, C, h, w]."""
         if self.backbone is None:
-            feats = self.sd(x, (self.sd_out_grid, self.sd_out_grid))
+            grid = int(self.cfg.get("sd_out_grid", self.sd_out_grid))
+            out_hw = (grid, grid)
             if hasattr(self, "sd_adapter"):
-                feats = self.sd_adapter(feats)
+                feats = self.sd_adapter(self.sd.forward_multiscale(x), out_hw)
+            else:
+                feats = self.sd(x, out_hw)
             return self.head(feats)
         feats = self.head(self.backbone(x))
         if hasattr(self, "fusion"):
