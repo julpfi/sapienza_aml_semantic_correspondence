@@ -245,3 +245,5 @@ colab/inspect_errors.ipynb
 IDEAS_AND_GAPS.md
 analysis_report/
 *.pdf
+*.pptx
+*.ppt
