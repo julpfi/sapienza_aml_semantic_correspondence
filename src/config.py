@@ -400,6 +400,17 @@ UNIFIED_LORA_LARGE_SD_HI = {
     "sd_image_size": 960,
 }
 
+# Combined preset with all 3 options active: slim 1.80M bottleneck + t=100 + 60x60 grid (840px / 960px).
+UNIFIED_LORA_LARGE_SD_V2 = {
+    **UNIFIED_LORA_LARGE_SD,
+    "adapter_bottleneck": True,
+    "adapter_layers": 1,
+    "adapter_dim": 256,
+    "sd_timestep": 100,
+    "image_size": 840,
+    "sd_image_size": 960,
+}
+
 # Pure Diffusion Hyperfeatures (zero DINOv2; 100% Part-2 compliant):
 # Native 768x768 SD 2.1 multi-scale features (mid_block + up_blocks[0, 1, 2]: 12x12, 24x24, 48x48, 96x96)
 # aggregated via orthogonal 1x1 stems + native-scale residual bottlenecks into a clean 256-d 96x96 descriptor map.
@@ -469,6 +480,7 @@ PRESETS = {
     "unified_lora_large_sd_slim": UNIFIED_LORA_LARGE_SD_SLIM,
     "unified_lora_large_sd_t100": UNIFIED_LORA_LARGE_SD_T100,
     "unified_lora_large_sd_hi": UNIFIED_LORA_LARGE_SD_HI,
+    "unified_lora_large_sd_v2": UNIFIED_LORA_LARGE_SD_V2,
     "sd_pure": SD_PURE,
     "sd_pure_frozen": SD_PURE_FROZEN,
     "cleandift_hyper": CLEANDIFT_HYPER,
