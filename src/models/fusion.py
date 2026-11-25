@@ -53,6 +53,20 @@ class Fusion(nn.Module):
                 self.mix.weight.copy_(torch.cat([eye, eye], dim=1))
                 self.mix.bias.zero_()
 
+    @torch.no_grad()
+    def mix_stats(self):
+        """adapter_mix only: how far W_d and W_s moved from I (relative Frobenius norm), and |b|, for W&B."""
+        if self.kind != "adapter_mix":
+            return {}
+        dim = self.mix.out_channels
+        w = self.mix.weight[:, :, 0, 0]
+        eye = torch.eye(dim, device=w.device, dtype=w.dtype)
+        scale = dim ** 0.5  # ||I||_F
+        return {"fusion/mix_wd_dev": float((w[:, :dim] - eye).norm() / scale),
+                "fusion/mix_ws_dev": float((w[:, dim:] - eye).norm() / scale),
+                "fusion/mix_ws_over_wd": float(w[:, dim:].norm() / w[:, :dim].norm()),
+                "fusion/mix_bias_norm": float(self.mix.bias.norm())}
+
     def forward(self, dino_feats, sd_feats):
         """[B, C_dino, h, w] and [B, C_sd, h, w] -> fused [B, out_dim, h, w], L2-normalised."""
         if self.kind == "concat":

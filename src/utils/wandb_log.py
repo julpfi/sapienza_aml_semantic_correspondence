@@ -20,7 +20,8 @@ def init_wandb(cfg, run_id, run_dir, job_type="train"):
 
     local_dir = Path(run_dir) if mode == "offline" else Path(tempfile.gettempdir()) / "wandb_runs" / run_id
     local_dir.mkdir(parents=True, exist_ok=True)
+    tags = [f"preset:{cfg.get('preset', 'none')}", f"fusion:{cfg['fusion']}"]
     return wandb.init(project=cfg["wandb_project"], entity=cfg["wandb_entity"], id=run_id, name=run_id,
-                      job_type=job_type, config=cfg, resume="allow", mode=mode, dir=str(local_dir),
+                      job_type=job_type, config=cfg, tags=tags, resume="allow", mode=mode, dir=str(local_dir),
                       # no system charts (GPU, CPU, disk...) and no console capture
                       settings=wandb.Settings(x_disable_stats=True, console="off"))

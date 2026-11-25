@@ -360,7 +360,16 @@ UNIFIED_LORA_LARGE_SD = {
 }
 
 # D-011: UNIFIED_LORA_LARGE_SD with a learned 1x1 conv merging DINOv2 and the adapter output; starts as the adapter model.
-UNIFIED_LORA_LARGE_SD_MIX = {**UNIFIED_LORA_LARGE_SD, "fusion": "adapter_mix"}
+# Training augmentation: pair flip (flip_augment) on; rotation 25 deg and crop [0.45, 1.0] from UNIFIED_LORA, the
+# other aug_* probabilities from BASE. flip_test = mirrored-source test at evaluation. grad_clip 15: the SD adapter
+# raises the global gradient norm (docs/explaination.md section 6).
+UNIFIED_LORA_LARGE_SD_MIX = {
+    **UNIFIED_LORA_LARGE_SD,
+    "fusion": "adapter_mix",
+    "flip_augment": True,
+    "flip_test": True,
+    "grad_clip": 15.0,
+}
 
 PRESETS = {
     "unified_lora": UNIFIED_LORA,
@@ -368,7 +377,7 @@ PRESETS = {
     "unified_lora_large_sd": UNIFIED_LORA_LARGE_SD,
     "unified_lora_large_sd_mix": UNIFIED_LORA_LARGE_SD_MIX,
 }
-ACTIVE_PRESET = None
+ACTIVE_PRESET = "unified_lora_large_sd_mix"
 
 
 def resolve_paths(cfg):
@@ -391,12 +400,14 @@ def resolve_paths(cfg):
 def get_config(preset=None):
     """A copy of BASE (optionally updated with a named preset) with paths resolved for the runtime."""
     cfg = deepcopy(BASE)
+    cfg["preset"] = "none"
     chosen = preset or os.environ.get("SC_PRESET") or ACTIVE_PRESET
     if chosen and chosen != "none":
         norm = chosen.replace("-", "_")
         if norm not in PRESETS:
             raise ValueError(f"Unknown preset {chosen!r}. Use one of {sorted(PRESETS)} or 'none'.")
         cfg.update(deepcopy(PRESETS[norm]))
+        cfg["preset"] = norm  # saved in config.json and the W&B config
     return resolve_paths(cfg)
 
 

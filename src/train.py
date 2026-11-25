@@ -463,6 +463,7 @@ def train(cfg, model, run_id, run_dir, resume=False):
                                **({"train/loss_temperature": temperature} if cfg["loss_temperature_start"] else {}),
                                "batch/effective": micro * accum,
                                **({"batch/queries": update_queries} if pair_mode else {}),
+                               **(model.fusion.mix_stats() if hasattr(model, "fusion") else {}),
                                "optim/grad_norm": grad_norm,
                                "optim/grad_clipped": float(grad_norm > cfg["grad_clip"])}, step=global_step)
             progress.set_postfix(loss_over_chance=f"{means.get('loss_over_chance', float('nan')):.3f}")
