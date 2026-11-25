@@ -228,6 +228,7 @@ BASE = {
     "sd_mix_init": None,               # optional initial logits for learned per-block softmax mixing
     "sd_concat_weight": 0.5,           # weight of the SD part in "concat"
     "adapter_dropout": 0.0,            # Dropout2d on the SD input of Fusion("adapter"/"adapter_mix"), train only
+    "adapter_bottleneck": False,       # True = project sd_dim -> adapter_dim -> dino_dim (~4x fewer params)
     "adapter_layers": 2,               # bottleneck blocks after the 1x1 input convolution
     "adapter_dim": 256,                # bottleneck width
     "lr_adapter": 3e-4,                # peak lr of the adapter (the old head at 1e-3 flattened the maps); used with fusion only
@@ -306,7 +307,7 @@ V3_OFF = {
     "val_fold": None, "feature_layers": None, "csls_weight": 0.0,
     "backbone": "dinov2", "sd_up_blocks": None, "sd_mid_block": False, "sd_noise_samples": 1,
     "sd_cleandift_repo": None, "sd_cleandift_file": None, "sd_add_noise": True,
-    "sd_proj_dim": 256, "sd_mix_init": None, "adapter_dropout": 0.0,
+    "sd_proj_dim": 256, "sd_mix_init": None, "adapter_dropout": 0.0, "adapter_bottleneck": False,
 }
 
 # v2 values of the training, augmentation and fusion keys that D-008 changed. BASE updated with these = the v2 training
@@ -322,7 +323,7 @@ V2_TRAINING = {
     "val_fold": None, "feature_layers": None, "csls_weight": 0.0,
     "backbone": "dinov2", "sd_up_blocks": None, "sd_mid_block": False, "sd_noise_samples": 1,
     "sd_cleandift_repo": None, "sd_cleandift_file": None, "sd_add_noise": True,
-    "sd_proj_dim": 256, "sd_mix_init": None, "adapter_dropout": 0.0,
+    "sd_proj_dim": 256, "sd_mix_init": None, "adapter_dropout": 0.0, "adapter_bottleneck": False,
 }
 
 # Unified winners preset: lorav2 attention+MLP LoRA (less overfitting on unseen test images) +
@@ -376,6 +377,27 @@ UNIFIED_LORA_LARGE_SD = {
 UNIFIED_LORA_LARGE_SD_MIX = {
     **UNIFIED_LORA_LARGE_SD,
     "fusion": "adapter_mix",
+}
+
+# Experiment 1: Shrink adapter bottleneck (3200 -> 256 -> 1024, 1 block; ~1.67M adapter params vs 6.56M).
+UNIFIED_LORA_LARGE_SD_SLIM = {
+    **UNIFIED_LORA_LARGE_SD,
+    "adapter_bottleneck": True,
+    "adapter_layers": 1,
+    "adapter_dim": 256,
+}
+
+# Experiment 2: Test SD noise timestep t = 100 (GeoAware-SC / SD+DINO range) vs t = 261.
+UNIFIED_LORA_LARGE_SD_T100 = {
+    **UNIFIED_LORA_LARGE_SD,
+    "sd_timestep": 100,
+}
+
+# Experiment 3: Increase spatial grid resolution to 60x60 (DINOv2 840px + SD 960px, SD+DINO / GeoAware-SC grid).
+UNIFIED_LORA_LARGE_SD_HI = {
+    **UNIFIED_LORA_LARGE_SD,
+    "image_size": 840,
+    "sd_image_size": 960,
 }
 
 # Pure Diffusion Hyperfeatures (zero DINOv2; 100% Part-2 compliant):
@@ -444,6 +466,9 @@ PRESETS = {
     "unified_lora_large": UNIFIED_LORA_LARGE,
     "unified_lora_large_sd": UNIFIED_LORA_LARGE_SD,
     "unified_lora_large_sd_mix": UNIFIED_LORA_LARGE_SD_MIX,
+    "unified_lora_large_sd_slim": UNIFIED_LORA_LARGE_SD_SLIM,
+    "unified_lora_large_sd_t100": UNIFIED_LORA_LARGE_SD_T100,
+    "unified_lora_large_sd_hi": UNIFIED_LORA_LARGE_SD_HI,
     "sd_pure": SD_PURE,
     "sd_pure_frozen": SD_PURE_FROZEN,
     "cleandift_hyper": CLEANDIFT_HYPER,

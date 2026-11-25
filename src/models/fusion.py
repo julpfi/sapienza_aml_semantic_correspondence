@@ -40,9 +40,14 @@ class Fusion(nn.Module):
             return
         hidden = cfg["adapter_dim"]
         self.drop = nn.Dropout2d(cfg.get("adapter_dropout", 0.0))
-        self.inp = nn.Conv2d(sd_dim, dino_dim, kernel_size=1)
-        self.blocks = nn.Sequential(*[_Bottleneck(dino_dim, hidden) for _ in range(cfg["adapter_layers"])])
-        self.out = nn.Conv2d(dino_dim, dino_dim, kernel_size=1)
+        if cfg.get("adapter_bottleneck"):
+            self.inp = nn.Conv2d(sd_dim, hidden, kernel_size=1)
+            self.blocks = nn.Sequential(*[_Bottleneck(hidden, hidden) for _ in range(cfg["adapter_layers"])])
+            self.out = nn.Conv2d(hidden, dino_dim, kernel_size=1)
+        else:
+            self.inp = nn.Conv2d(sd_dim, dino_dim, kernel_size=1)
+            self.blocks = nn.Sequential(*[_Bottleneck(dino_dim, hidden) for _ in range(cfg["adapter_layers"])])
+            self.out = nn.Conv2d(dino_dim, dino_dim, kernel_size=1)
         nn.init.zeros_(self.out.weight)
         nn.init.zeros_(self.out.bias)
         if kind == "adapter_mix":
