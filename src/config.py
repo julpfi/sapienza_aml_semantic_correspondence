@@ -205,10 +205,11 @@ BASE = {
     # EMA of the trained weights: validation and best.pt use the averaged weights.
     "ema_decay": 0.99,                 # 0 = off (v2); 0.99 = memory of ~100 updates
     # Stable Diffusion features (frozen, DIFT recipe) fused with the DINOv2 features.
-    #   "none"    = DINOv2 only (v2)
-    #   "concat"  = normalize(cat(dino, sd_concat_weight * sd)); nothing trained: the frozen gate
-    #   "adapter" = normalize(dino + adapter(sd)); the adapter's last layer starts at zero (update 0 = DINOv2)
-    "fusion": "none",                  # "none" (default on giuseppe branch) | "concat" | "adapter"
+    #   "none"        = DINOv2 only (v2)
+    #   "concat"      = normalize(cat(dino, sd_concat_weight * sd)); nothing trained: the frozen gate
+    #   "adapter"     = normalize(dino + adapter(sd)); the adapter's last layer starts at zero (update 0 = DINOv2)
+    #   "adapter_mix" = normalize(mix(cat(dino, adapter(sd)))), 1x1 conv init [I | I] so update 0 = adapter
+    "fusion": "none",                  # "none" (default on giuseppe branch) | "concat" | "adapter" | "adapter_mix"
     "sd_model_id": "sd2-community/stable-diffusion-2-1",  # stabilityai/stable-diffusion-2-1 is no longer public
     "sd_model_revision": "bb2154823665391b4fb29b0b9cf82a198964ee05",  # Hub commit, checked 2026-11-16
     "sd_cleandift_repo": None,         # e.g. "CompVis/cleandift" to load noise-free CleanDIFT UNet weights
@@ -226,6 +227,7 @@ BASE = {
     "sd_adapter_dropout": 0.15,        # spatial Dropout2d inside SDHyperfeatureAdapter
     "sd_mix_init": None,               # optional initial logits for learned per-block softmax mixing
     "sd_concat_weight": 0.5,           # weight of the SD part in "concat"
+    "adapter_dropout": 0.0,            # Dropout2d on the SD input of Fusion("adapter"/"adapter_mix"), train only
     "adapter_layers": 2,               # bottleneck blocks after the 1x1 input convolution
     "adapter_dim": 256,                # bottleneck width
     "lr_adapter": 3e-4,                # peak lr of the adapter (the old head at 1e-3 flattened the maps); used with fusion only
@@ -304,7 +306,7 @@ V3_OFF = {
     "val_fold": None, "feature_layers": None, "csls_weight": 0.0,
     "backbone": "dinov2", "sd_up_blocks": None, "sd_mid_block": False, "sd_noise_samples": 1,
     "sd_cleandift_repo": None, "sd_cleandift_file": None, "sd_add_noise": True,
-    "sd_proj_dim": 256, "sd_mix_init": None,
+    "sd_proj_dim": 256, "sd_mix_init": None, "adapter_dropout": 0.0,
 }
 
 # v2 values of the training, augmentation and fusion keys that D-008 changed. BASE updated with these = the v2 training
@@ -320,7 +322,7 @@ V2_TRAINING = {
     "val_fold": None, "feature_layers": None, "csls_weight": 0.0,
     "backbone": "dinov2", "sd_up_blocks": None, "sd_mid_block": False, "sd_noise_samples": 1,
     "sd_cleandift_repo": None, "sd_cleandift_file": None, "sd_add_noise": True,
-    "sd_proj_dim": 256, "sd_mix_init": None,
+    "sd_proj_dim": 256, "sd_mix_init": None, "adapter_dropout": 0.0,
 }
 
 # Unified winners preset: lorav2 attention+MLP LoRA (less overfitting on unseen test images) +
@@ -352,13 +354,28 @@ UNIFIED_LORA = {
 }
 
 # Stronger backbone upgrade: exact 0.64851 UNIFIED_LORA recipe on facebook/dinov2-large (304M, 24 blocks, 1024-d).
-# Uses the same legacy val split, final layer -1, 92x92 adaptive loss, and 2-stage object zoom.
+# Uses the same legacy val split, final layer -1, 92x92 adaptive loss, and 2-stage object zoom (0.70 LB).
 UNIFIED_LORA_LARGE = {
     **UNIFIED_LORA,
     "model_id": "facebook/dinov2-large",
     "model_revision": "47b73eefe95e8d44ec3623f8890bd894b6ea2d6c",
     "lora_blocks": 6,
     "lr_lora": 8e-5,
+}
+
+# D-009 (sd branch, 0.69 LB): UNIFIED_LORA_LARGE + frozen SD 2.1 multi-block [0, 1, 2] adapter fusion.
+UNIFIED_LORA_LARGE_SD = {
+    **UNIFIED_LORA_LARGE,
+    "fusion": "adapter",
+    "sd_up_blocks": [0, 1, 2],
+    "sd_noise_samples": 4,
+    "adapter_dropout": 0.2,
+}
+
+# D-011 (sd branch): UNIFIED_LORA_LARGE_SD with learned 1x1 conv merging DINOv2 and the SD adapter output.
+UNIFIED_LORA_LARGE_SD_MIX = {
+    **UNIFIED_LORA_LARGE_SD,
+    "fusion": "adapter_mix",
 }
 
 # Pure Diffusion Hyperfeatures (zero DINOv2; 100% Part-2 compliant):
@@ -425,6 +442,8 @@ CLEANDIFT_FROZEN = {
 PRESETS = {
     "unified_lora": UNIFIED_LORA,
     "unified_lora_large": UNIFIED_LORA_LARGE,
+    "unified_lora_large_sd": UNIFIED_LORA_LARGE_SD,
+    "unified_lora_large_sd_mix": UNIFIED_LORA_LARGE_SD_MIX,
     "sd_pure": SD_PURE,
     "sd_pure_frozen": SD_PURE_FROZEN,
     "cleandift_hyper": CLEANDIFT_HYPER,

@@ -69,11 +69,20 @@ def _apply_cli_overrides(cfg, args):
     old_sd_grid = int(cfg.get("sd_out_grid", 46))
     for attr, key in (("image_size", "image_size"), ("soft_window", "soft_window"),
                       ("soft_temperature", "soft_temperature"), ("flip_test", "flip_test"),
-                      ("object_zoom", "object_zoom"), ("cross_transform", "cross_transform"),
-                      ("fusion", "fusion"), ("csls_weight", "csls_weight")):
+                      ("object_zoom", "object_zoom"), ("csls_weight", "csls_weight")):
         val = getattr(args, attr)
         if val is not None:
             cfg[key] = val
+    # Architecture flags change the model, so a saved run keeps its own: its weights fit only that model.
+    new_run = not (args.resume or args.run or args.ensemble)
+    for attr in ("cross_transform", "fusion"):
+        val = getattr(args, attr)
+        if val is None:
+            continue
+        if new_run:
+            cfg[attr] = val
+        elif val != cfg.get(attr):
+            print(f"Warning: --{attr.replace('_', '-')} {val} ignored; the saved run uses {cfg.get(attr)!r}.")
     if args.image_size is not None and cfg.get("backbone") == "sd":
         new_size = int(args.image_size)
         cfg["sd_image_size"] = new_size
