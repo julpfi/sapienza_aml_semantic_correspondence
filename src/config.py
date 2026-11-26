@@ -400,15 +400,15 @@ UNIFIED_LORA_LARGE_SD_HI = {
     "sd_image_size": 960,
 }
 
-# Combined preset with all 3 options active: slim 1.80M bottleneck + t=100 + 60x60 grid (840px / 960px).
+# Combined slim preset: slim 1.80M bottleneck + t=261 + 46x46 grid (644px DINOv2 / 736px SD).
 UNIFIED_LORA_LARGE_SD_V2 = {
     **UNIFIED_LORA_LARGE_SD,
     "adapter_bottleneck": True,
     "adapter_layers": 1,
     "adapter_dim": 256,
     "sd_timestep": 261,
-    "image_size": 840,
-    "sd_image_size": 960,
+    "image_size": 644,
+    "sd_image_size": 736,
 }
 
 # Pure Diffusion Hyperfeatures (zero DINOv2; 100% Part-2 compliant):
