@@ -134,6 +134,34 @@ class CorrespondenceModel(nn.Module):
                                      sample["trg_img"].size, cfg, flipped)
         return pred[0], flipped
 
+    @torch.no_grad()
+    def predict_candidates(self, sample, cfg=None, cache=None):
+        """Return (pred_xy [2], used_flip, topk_peaks) for VLM re-ranking."""
+        cfg = cfg or self.cfg
+        if cfg.get("object_zoom"):
+            from src.models.zoom import predict_with_zoom
+
+            return predict_with_zoom(self, sample, cfg, cache=cache, return_peaks=True)
+        from src.models.matching import compute_similarity_map
+        from src.models.vlm_rerank import extract_topk_peaks
+
+        src_feats = self.image_features(sample["src_img"], cache=cache, key=sample["src_image"])
+        trg_feats = self.image_features(sample["trg_img"], cache=cache, key=sample["trg_image"])
+        src_feats, trg_raw = self.pair_features(src_feats, trg_feats)
+        src_flip, trg_flip = None, trg_raw
+        if cfg["flip_test"]:
+            src_flip_base = self.image_features(sample["src_img"], flip=True, cache=cache, key=sample["src_image"])
+            src_flip, trg_flip = self.pair_features(src_flip_base, trg_feats)
+        src_chosen, flipped = choose_source(src_feats, src_flip, trg_raw)
+        trg_chosen = trg_flip if flipped else trg_raw
+        sim = compute_similarity_map(src_chosen, trg_chosen, sample["src_xy"][None],
+                                     sample["src_img"].size, cfg, flipped)
+        peaks = extract_topk_peaks(
+            sim, sample["trg_img"].size, (0.0, 0.0), cfg,
+            k=cfg.get("vlm_top_k", 2), nms_radius=cfg.get("vlm_nms_radius", 10),
+        )
+        return peaks[0]["xy_orig"], flipped, peaks
+
 
 def build_model(cfg, device=None):
     """Build the model on `device` (default from cfg), frozen and in eval mode."""

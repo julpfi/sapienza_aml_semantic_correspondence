@@ -25,13 +25,31 @@ def predict(cfg, model, run_dir):
     cache = model.new_cache()
     model.eval()
     rows = []
-    for i in tqdm(range(len(dataset)), desc="predict test"):
-        sample = dataset[i]
-        pred_xy, _ = model.predict(sample, cfg, cache=cache)
-        if cfg["clip_to_image"]:
-            pred_xy = clip_point(pred_xy, sample["trg_img"].size)
-        rows.append({"id": sample["query_id"], "x": float(pred_xy[0]), "y": float(pred_xy[1])})
-    print(f"feature cache: {cache.hits} hits / {cache.misses} misses")
+    if cfg.get("vlm_rerank"):
+        from src.models.vlm_rerank import rerank_predictions
+
+        qids, trg_sizes, pred_xys, peaks_list = [], [], [], []
+        for i in tqdm(range(len(dataset)), desc="predict test"):
+            sample = dataset[i]
+            pred_xy, _, peaks = model.predict_candidates(sample, cfg, cache=cache)
+            qids.append(sample["query_id"])
+            trg_sizes.append(sample["trg_img"].size)
+            pred_xys.append(pred_xy)
+            peaks_list.append(peaks)
+        print(f"feature cache: {cache.hits} hits / {cache.misses} misses")
+        pred_xys, _ = rerank_predictions(dataset, pred_xys, peaks_list, cfg, model=model, cache=cache, verbose=True)
+        for qid, trg_wh, pred_xy in zip(qids, trg_sizes, pred_xys):
+            if cfg["clip_to_image"]:
+                pred_xy = clip_point(pred_xy, trg_wh)
+            rows.append({"id": qid, "x": float(pred_xy[0]), "y": float(pred_xy[1])})
+    else:
+        for i in tqdm(range(len(dataset)), desc="predict test"):
+            sample = dataset[i]
+            pred_xy, _ = model.predict(sample, cfg, cache=cache)
+            if cfg["clip_to_image"]:
+                pred_xy = clip_point(pred_xy, sample["trg_img"].size)
+            rows.append({"id": sample["query_id"], "x": float(pred_xy[0]), "y": float(pred_xy[1])})
+        print(f"feature cache: {cache.hits} hits / {cache.misses} misses")
     df = pd.DataFrame(rows, columns=["id", "x", "y"])
     out = Path(run_dir) / "predictions.csv"
     df.to_csv(out, index=False)

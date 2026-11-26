@@ -51,6 +51,18 @@ def parse_args(argv=None):
                         help="Comma-separated run IDs to ensemble in similarity space (evaluate/submit)")
     parser.add_argument("--ensemble-weights", default=None,
                         help="Comma-separated weights for --ensemble (default: equal)")
+    parser.add_argument("--vlm-rerank", action=argparse.BooleanOptionalAction, default=None,
+                        help="Enable zero-shot Qwen2.5-VL Top-K peak tie-breaking (evaluate/submit)")
+    parser.add_argument("--vlm-alpha", type=float, default=None,
+                        help="VLM soft blend weight: cos(k) + alpha * P_vlm(k) (default: 0.020)")
+    parser.add_argument("--vlm-gap", type=float, default=None,
+                        help="Max Peak1-Peak2 similarity gap to send to VLM (default: vlm_alpha)")
+    parser.add_argument("--vlm-top-k", type=int, default=None,
+                        help="Number of candidate peaks for VLM re-ranking (default: 2)")
+    parser.add_argument("--vlm-swap-debias", action=argparse.BooleanOptionalAction, default=None,
+                        help="Average 1<->2 label-swapped VLM passes to remove token bias")
+    parser.add_argument("--vlm-lora", default=None,
+                        help="Optional path to QLoRA adapter weights for the VLM reranker")
     parser.add_argument("--submission-name", default="submission.csv",
                         help="Filename for --mode submit inside <run_dir>/ (default: submission.csv)")
     args = parser.parse_args(argv)
@@ -69,7 +81,10 @@ def _apply_cli_overrides(cfg, args):
     old_sd_grid = int(cfg.get("sd_out_grid", 46))
     for attr, key in (("image_size", "image_size"), ("soft_window", "soft_window"),
                       ("soft_temperature", "soft_temperature"), ("flip_test", "flip_test"),
-                      ("object_zoom", "object_zoom"), ("csls_weight", "csls_weight")):
+                      ("object_zoom", "object_zoom"), ("csls_weight", "csls_weight"),
+                      ("vlm_rerank", "vlm_rerank"), ("vlm_alpha", "vlm_alpha"),
+                      ("vlm_gap", "vlm_gap"), ("vlm_top_k", "vlm_top_k"),
+                      ("vlm_swap_debias", "vlm_swap_debias"), ("vlm_lora", "vlm_lora_path")):
         val = getattr(args, attr)
         if val is not None:
             cfg[key] = val
@@ -203,7 +218,7 @@ def main(argv=None):
         summary, meter = evaluate(cfg, model, run_dir, with_loss=not args.ensemble, cache=cache)
         print(meter.per_group().to_string(index=False))
         print(meter.error_types().to_string())
-        sweep = None if args.ensemble else run_sweep(cfg, model, device, cache=cache)
+        sweep = None if (args.ensemble or cfg.get("vlm_rerank")) else run_sweep(cfg, model, device, cache=cache)
         if sweep is not None:
             sweep.to_csv(run_dir / "sweep.csv", index=False)
             print(describe(sweep, cfg))

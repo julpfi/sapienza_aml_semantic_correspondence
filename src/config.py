@@ -146,6 +146,17 @@ BASE = {
     "feature_cache_size": 256,         # images kept in memory during inference
     "cache_features_to_disk": False,   # frozen mode only: store backbone features in features_dir
 
+    # --- Zero-shot VLM Top-2 Peak Re-Ranking (Part 1 inference only, src/models/vlm_rerank.py) ---
+    "vlm_rerank": False,               # True = soft tie-break ambiguous Top-2 peaks with Qwen2.5-VL-7B (4-bit)
+    "vlm_model_id": "Qwen/Qwen2.5-VL-7B-Instruct",
+    "vlm_top_k": 2,                    # 2 (validated best: 69.76% vs 69.32% top-3)
+    "vlm_nms_radius": 10,              # minimum separation (cells) between candidate peaks
+    "vlm_alpha": 0.020,                # blend weight: cos(k) + alpha * P_vlm(k)
+    "vlm_gap": None,                   # max Peak1-Peak2 gap to score (None = vlm_alpha, exact)
+    "vlm_max_image_side": 448,         # resize SoM images to fit T4 15GB VRAM
+    "vlm_swap_debias": False,          # True = average 1<->2 label-swapped passes
+    "vlm_lora_path": None,             # optional path to QLoRA adapter weights
+
     # --- Training (Colab T4; docs/RUN.md section 8) ---
     "train_mode": "finetune",          # last DINOv2 blocks + final LayerNorm ("frozen" needs a head: old runs only;
                                        # "lora" = LoRA on the last lora_blocks blocks, see the v3 additions)

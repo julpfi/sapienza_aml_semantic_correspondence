@@ -42,16 +42,38 @@ def evaluate(cfg, model, run_dir, save=True, verbose=True, with_loss=True, cache
     cache = cache if cache is not None else model.new_cache()
     model.eval()
     losses = {}
+    vlm_stats = None
     start = time.time()
-    with torch.no_grad():
-        for i in tqdm(range(len(dataset)), disable=not verbose, desc="evaluate val"):
-            sample = dataset[i]
-            pred_xy, flipped = model.predict(sample, cfg, cache=cache)
-            meter.update(sample, pred_xy, flipped)
-            if with_loss:
-                losses[sample["query_id"]] = validation_loss(cfg, model, sample, cache)
+    if cfg.get("vlm_rerank"):
+        from src.models.vlm_rerank import rerank_predictions
+
+        pred_xys, flips, peaks_list = [], [], []
+        with torch.no_grad():
+            for i in tqdm(range(len(dataset)), disable=not verbose, desc="evaluate val"):
+                sample = dataset[i]
+                pred_xy, flipped, peaks = model.predict_candidates(sample, cfg, cache=cache)
+                pred_xys.append(pred_xy)
+                flips.append(flipped)
+                peaks_list.append(peaks)
+                if with_loss:
+                    losses[sample["query_id"]] = validation_loss(cfg, model, sample, cache)
+        pred_xys, vlm_stats = rerank_predictions(
+            dataset, pred_xys, peaks_list, cfg, model=model, cache=cache, verbose=verbose
+        )
+        for i in range(len(dataset)):
+            meter.update(dataset[i], pred_xys[i], flips[i])
+    else:
+        with torch.no_grad():
+            for i in tqdm(range(len(dataset)), disable=not verbose, desc="evaluate val"):
+                sample = dataset[i]
+                pred_xy, flipped = model.predict(sample, cfg, cache=cache)
+                meter.update(sample, pred_xy, flipped)
+                if with_loss:
+                    losses[sample["query_id"]] = validation_loss(cfg, model, sample, cache)
     summary = meter.summary()
     summary["sec_per_query"] = (time.time() - start) / max(len(dataset), 1)
+    if vlm_stats:
+        summary.update(vlm_stats)
 
     frame = meter.frame()
     if losses:

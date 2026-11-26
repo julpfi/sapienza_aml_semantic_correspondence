@@ -87,9 +87,10 @@ def _stage1_pair(model, sample, cfg, cache):
 
 
 @torch.no_grad()
-def predict_with_zoom(model, sample, cfg, cache=None):
+def predict_with_zoom(model, sample, cfg, cache=None, return_peaks=False):
     """Two-stage object-centric zoom prediction for one query sample.
-    Returns (pred_xy [2] in original target pixels, used_flip)."""
+    Returns (pred_xy [2] in original target pixels, used_flip), or
+    (pred_xy, used_flip, peaks) when return_peaks=True."""
     src_chosen, trg_chosen, flipped = _stage1_pair(model, sample, cfg, cache)
     src_wh, trg_wh = sample["src_img"].size, sample["trg_img"].size
     size = int(cfg["image_size"])
@@ -121,13 +122,26 @@ def predict_with_zoom(model, sample, cfg, cache=None):
         if cache is not None:
             cache.put(pair_key, (sbox, tbox, fs2, ft2, ctx_xy))
 
+    def _finish(sim_map, out_wh, offset_xy):
+        if return_peaks:
+            from src.models.vlm_rerank import extract_topk_peaks
+
+            peaks = extract_topk_peaks(
+                sim_map, out_wh, offset_xy, cfg,
+                k=cfg.get("vlm_top_k", 2), nms_radius=cfg.get("vlm_nms_radius", 10),
+            )
+            return peaks[0]["xy_orig"], flipped, peaks
+        pred = locate(sim_map, size, cfg["matcher"], cfg["soft_window"], cfg["soft_temperature"])
+        pred_xy = to_original(pred.cpu(), out_wh, size).numpy()[0]
+        return pred_xy + np.asarray(offset_xy, dtype=np.float32), flipped
+
     sc_wh = (sbox[2] - sbox[0], sbox[3] - sbox[1])
     tc_wh = (tbox[2] - tbox[0], tbox[3] - tbox[1])
     q_in = np.asarray(sample["src_xy"], dtype=np.float32) - np.array(sbox[:2], dtype=np.float32)
     inside = (0.0 <= q_in[0] < sc_wh[0]) and (0.0 <= q_in[1] < sc_wh[1])
     if not inside:
-        pred = predict_from_features(src_chosen, trg_chosen, sample["src_xy"][None], src_wh, trg_wh, cfg, flipped)
-        return pred[0], flipped
+        sim1 = _similarity_map(src_chosen, trg_chosen, sample["src_xy"][None], src_wh, cfg, flipped)
+        return _finish(sim1, trg_wh, (0.0, 0.0))
 
     sim2 = _similarity_map(fs2, ft2, q_in[None], sc_wh, cfg, flipped)
     w1 = float(cfg.get("zoom_stage1_weight", 0.0))
@@ -135,11 +149,8 @@ def predict_with_zoom(model, sample, cfg, cache=None):
     if not is_full and w1 > 0.0:
         sim1 = _similarity_map(src_chosen, trg_chosen, sample["src_xy"][None], src_wh, cfg, flipped)
         if float(sim1.max()) > float(sim2.max()) + 0.05:
-            pred1 = locate(sim1, size, cfg["matcher"], cfg["soft_window"], cfg["soft_temperature"])
-            return to_original(pred1.cpu(), trg_wh, size).numpy()[0], flipped
+            return _finish(sim1, trg_wh, (0.0, 0.0))
         sim1_crop = _sample_stage1_into_crop(sim1, tbox, trg_wh, sim2.shape[1:], size)
         sim2 = (1.0 - w1) * sim2 + w1 * sim1_crop
 
-    pred2 = locate(sim2, size, cfg["matcher"], cfg["soft_window"], cfg["soft_temperature"])
-    pred_xy = to_original(pred2.cpu(), tc_wh, size).numpy()[0]
-    return pred_xy + np.array(tbox[:2], dtype=np.float32), flipped
+    return _finish(sim2, tc_wh, tbox[:2])

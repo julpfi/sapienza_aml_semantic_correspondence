@@ -101,7 +101,12 @@ class EnsembleModel(nn.Module):
         return per_model, flipped
 
     @torch.no_grad()
-    def predict(self, sample, cfg=None, cache=None):
+    def predict_candidates(self, sample, cfg=None, cache=None):
+        """Return (pred_xy [2], used_flip, topk_peaks) for VLM re-ranking."""
+        return self.predict(sample, cfg=cfg, cache=cache, return_peaks=True)
+
+    @torch.no_grad()
+    def predict(self, sample, cfg=None, cache=None, return_peaks=False):
         cfg = cfg or self.cfg
         size = int(cfg["image_size"])
         src_wh, trg_wh = sample["src_img"].size, sample["trg_img"].size
@@ -109,12 +114,23 @@ class EnsembleModel(nn.Module):
             sample["src_img"], sample["trg_img"], sample["src_image"], sample["trg_image"], cfg, cache
         )
 
+        def _finish(sim_map, out_wh, offset_xy):
+            if return_peaks:
+                from src.models.vlm_rerank import extract_topk_peaks
+
+                peaks = extract_topk_peaks(
+                    sim_map, out_wh, offset_xy, cfg,
+                    k=cfg.get("vlm_top_k", 2), nms_radius=cfg.get("vlm_nms_radius", 10),
+                )
+                return peaks[0]["xy_orig"], flipped, peaks
+            pred = locate(sim_map, size, cfg["matcher"], cfg["soft_window"], cfg["soft_temperature"])
+            pred_xy = to_original(pred.cpu(), out_wh, size).numpy()[0]
+            return pred_xy + np.asarray(offset_xy, dtype=np.float32), flipped
+
         if not cfg.get("object_zoom"):
             sims = [self._model_sim_maps(i, sf, tf, sample["src_xy"][None], src_wh, cfg, flipped)
                     for i, (sf, tf) in enumerate(stage1_feats)]
-            sim = self._combine_sims(sims)
-            pred = locate(sim, size, cfg["matcher"], cfg["soft_window"], cfg["soft_temperature"])
-            return to_original(pred.cpu(), trg_wh, size).numpy()[0], flipped
+            return _finish(self._combine_sims(sims), trg_wh, (0.0, 0.0))
 
         # --- Shared 2-Stage Object-Centric Zoom ---
         pair_key = ("ens_zoom", str(sample["pair_id"]), sample["src_image"], sample["trg_image"], size, bool(flipped))
@@ -161,9 +177,7 @@ class EnsembleModel(nn.Module):
         if not inside:
             sims1 = [self._model_sim_maps(i, sf, tf, sample["src_xy"][None], src_wh, cfg, flipped)
                      for i, (sf, tf) in enumerate(stage1_feats)]
-            sim1 = self._combine_sims(sims1)
-            pred = locate(sim1, size, cfg["matcher"], cfg["soft_window"], cfg["soft_temperature"])
-            return to_original(pred.cpu(), trg_wh, size).numpy()[0], flipped
+            return _finish(self._combine_sims(sims1), trg_wh, (0.0, 0.0))
 
         sims2 = [self._model_sim_maps(i, sf2, tf2, q_in[None], sc_wh, cfg, flipped)
                  for i, (sf2, tf2) in enumerate(stage2_feats)]
@@ -176,11 +190,8 @@ class EnsembleModel(nn.Module):
                      for i, (sf, tf) in enumerate(stage1_feats)]
             sim1 = self._combine_sims(sims1)
             if float(sim1.max()) > float(sim2.max()) + 0.05:
-                pred1 = locate(sim1, size, cfg["matcher"], cfg["soft_window"], cfg["soft_temperature"])
-                return to_original(pred1.cpu(), trg_wh, size).numpy()[0], flipped
+                return _finish(sim1, trg_wh, (0.0, 0.0))
             sim1_crop = _sample_stage1_into_crop(sim1, tbox, trg_wh, sim2.shape[1:], size)
             sim2 = (1.0 - w1) * sim2 + w1 * sim1_crop
 
-        pred2 = locate(sim2, size, cfg["matcher"], cfg["soft_window"], cfg["soft_temperature"])
-        pred_xy = to_original(pred2.cpu(), tc_wh, size).numpy()[0]
-        return pred_xy + np.array(tbox[:2], dtype=np.float32), flipped
+        return _finish(sim2, tc_wh, tbox[:2])
