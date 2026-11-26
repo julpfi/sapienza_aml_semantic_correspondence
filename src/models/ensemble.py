@@ -114,13 +114,14 @@ class EnsembleModel(nn.Module):
             sample["src_img"], sample["trg_img"], sample["src_image"], sample["trg_image"], cfg, cache
         )
 
-        def _finish(sim_map, out_wh, offset_xy):
+        def _finish(sim_map, out_wh, offset_xy, cur_sbox=None, cur_tbox=None):
             if return_peaks:
                 from src.models.vlm_rerank import extract_topk_peaks
 
                 peaks = extract_topk_peaks(
                     sim_map, out_wh, offset_xy, cfg,
                     k=cfg.get("vlm_top_k", 2), nms_radius=cfg.get("vlm_nms_radius", 10),
+                    sbox=cur_sbox, tbox=cur_tbox,
                 )
                 return peaks[0]["xy_orig"], flipped, peaks
             pred = locate(sim_map, size, cfg["matcher"], cfg["soft_window"], cfg["soft_temperature"])
@@ -194,4 +195,4 @@ class EnsembleModel(nn.Module):
             sim1_crop = _sample_stage1_into_crop(sim1, tbox, trg_wh, sim2.shape[1:], size)
             sim2 = (1.0 - w1) * sim2 + w1 * sim1_crop
 
-        return _finish(sim2, tc_wh, tbox[:2])
+        return _finish(sim2, tc_wh, tbox[:2], cur_sbox=sbox, cur_tbox=tbox)

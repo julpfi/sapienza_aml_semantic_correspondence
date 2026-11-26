@@ -122,13 +122,14 @@ def predict_with_zoom(model, sample, cfg, cache=None, return_peaks=False):
         if cache is not None:
             cache.put(pair_key, (sbox, tbox, fs2, ft2, ctx_xy))
 
-    def _finish(sim_map, out_wh, offset_xy):
+    def _finish(sim_map, out_wh, offset_xy, cur_sbox=None, cur_tbox=None):
         if return_peaks:
             from src.models.vlm_rerank import extract_topk_peaks
 
             peaks = extract_topk_peaks(
                 sim_map, out_wh, offset_xy, cfg,
                 k=cfg.get("vlm_top_k", 2), nms_radius=cfg.get("vlm_nms_radius", 10),
+                sbox=cur_sbox, tbox=cur_tbox,
             )
             return peaks[0]["xy_orig"], flipped, peaks
         pred = locate(sim_map, size, cfg["matcher"], cfg["soft_window"], cfg["soft_temperature"])
@@ -153,4 +154,4 @@ def predict_with_zoom(model, sample, cfg, cache=None, return_peaks=False):
         sim1_crop = _sample_stage1_into_crop(sim1, tbox, trg_wh, sim2.shape[1:], size)
         sim2 = (1.0 - w1) * sim2 + w1 * sim1_crop
 
-    return _finish(sim2, tc_wh, tbox[:2])
+    return _finish(sim2, tc_wh, tbox[:2], cur_sbox=sbox, cur_tbox=tbox)

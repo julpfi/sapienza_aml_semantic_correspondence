@@ -48,12 +48,12 @@ def build_vlm_prompt(top_k):
     )
 
 
-def extract_topk_peaks(sim_1hw, out_wh, offset_xy, cfg, k=2, nms_radius=10):
+def extract_topk_peaks(sim_1hw, out_wh, offset_xy, cfg, k=2, nms_radius=10, sbox=None, tbox=None):
     """Extract top-K spatially separated local peaks from a [1, H, W] similarity map.
 
     Rank 1 uses the exact standard `locate(sim_1hw, ...)` so non-reranked queries are
     bit-for-bit identical to the baseline model.
-    Returns a list of dicts: `[{"rank": 1..k, "score": float, "xy_orig": np.ndarray[2]}]`.
+    Returns a list of dicts: `[{"rank": 1..k, "score": float, "xy_orig": np.ndarray[2], "sbox": ..., "tbox": ...}]`.
     """
     size = int(cfg["image_size"])
     offset = np.asarray(offset_xy, dtype=np.float32)
@@ -77,28 +77,49 @@ def extract_topk_peaks(sim_1hw, out_wh, offset_xy, cfg, k=2, nms_radius=10):
             s_local = sim_1hw[0].masked_fill(~local_mask, float("-inf"))[None]
             xy_res = locate(s_local, size, cfg["matcher"], cfg["soft_window"], cfg["soft_temperature"])[0]
         xy_orig = to_original(xy_res.cpu(), out_wh, size).numpy()[0] + offset
-        peaks.append({"rank": rank, "score": score, "xy_orig": xy_orig.astype(np.float32)})
+        peaks.append({
+            "rank": rank,
+            "score": score,
+            "xy_orig": xy_orig.astype(np.float32),
+            "sbox": sbox,
+            "tbox": tbox,
+        })
         s = s.masked_fill(local_mask, float("-inf"))
     return peaks
 
 
 def draw_som_pair(src_img, trg_img, src_xy, peaks, max_side=448):
-    """Draw Set-of-Mark circles on copies of (src_img, trg_img) and cap resolution for T4 VRAM."""
-    src = src_img.convert("RGB").copy()
-    trg = trg_img.convert("RGB").copy()
+    """Draw Set-of-Mark circles on zoomed Stage-2 crops (when sbox/tbox are present) and cap resolution for T4 VRAM."""
+    sbox = peaks[0].get("sbox") if peaks else None
+    tbox = peaks[0].get("tbox") if peaks else None
 
-    r_s = max(6, int(0.022 * max(src.size)))
-    r_t = max(8, int(0.028 * max(trg.size)))
+    src_rgb = src_img.convert("RGB")
+    trg_rgb = trg_img.convert("RGB")
+    if sbox is not None:
+        src = src_rgb.crop(sbox)
+        sx, sy = float(src_xy[0]) - float(sbox[0]), float(src_xy[1]) - float(sbox[1])
+    else:
+        src = src_rgb.copy()
+        sx, sy = float(src_xy[0]), float(src_xy[1])
+
+    if tbox is not None:
+        trg = trg_rgb.crop(tbox)
+        tx_off, ty_off = float(tbox[0]), float(tbox[1])
+    else:
+        trg = trg_rgb.copy()
+        tx_off, ty_off = 0.0, 0.0
+
+    r_s = max(6, int(0.025 * max(src.size)))
+    r_t = max(8, int(0.032 * max(trg.size)))
     ds = ImageDraw.Draw(src)
-    sx, sy = float(src_xy[0]), float(src_xy[1])
     ds.ellipse((sx - r_s, sy - r_s, sx + r_s, sy + r_s), fill="red", outline="white", width=3)
 
     dt = ImageDraw.Draw(trg)
     for idx, pk in enumerate(peaks):
         col = PALETTE[idx % len(PALETTE)]
-        tx, ty = float(pk["xy_orig"][0]), float(pk["xy_orig"][1])
+        tx, ty = float(pk["xy_orig"][0]) - tx_off, float(pk["xy_orig"][1]) - ty_off
         dt.ellipse((tx - r_t, ty - r_t, tx + r_t, ty + r_t), fill=col, outline="black", width=2)
-        dt.text((tx - r_t * 0.35, ty - r_t * 0.55), str(idx + 1), fill="black")
+        dt.text((tx - r_t * 0.3, ty - r_t * 0.55), str(idx + 1), fill="black")
 
     if max_side and int(max_side) > 0:
         cap = (int(max_side), int(max_side))
