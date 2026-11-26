@@ -406,7 +406,7 @@ UNIFIED_LORA_LARGE_SD_V2 = {
     "adapter_bottleneck": True,
     "adapter_layers": 1,
     "adapter_dim": 256,
-    "sd_timestep": 100,
+    "sd_timestep": 261,
     "image_size": 840,
     "sd_image_size": 960,
 }
