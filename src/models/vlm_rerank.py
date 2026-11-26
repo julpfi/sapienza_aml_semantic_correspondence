@@ -23,7 +23,8 @@ from tqdm.auto import tqdm
 from data.transforms import to_original
 from src.models.matching import locate
 
-PALETTE = ("#e74c3c", "#f1c40f", "#00e5ff")
+# Distinct neutral marker colors (avoid RED on Image 2 so Marker #1 doesn't color-match the RED query circle on Image 1)
+PALETTE = ("#00e5ff", "#f1c40f", "#2ecc71")
 
 
 def build_vlm_prompt(top_k):
@@ -248,6 +249,7 @@ def rerank_predictions(dataset, pred_xys, peaks_list, cfg, model=None, cache=Non
 
     updated = list(pred_xys)
     n_flipped = 0
+    prob_sum = np.zeros(top_k, dtype=np.float64)
     with torch.no_grad():
         for i in tqdm(ambig_indices, disable=not verbose, desc="VLM rerank"):
             sample = dataset[i]
@@ -268,6 +270,8 @@ def rerank_predictions(dataset, pred_xys, peaks_list, cfg, model=None, cache=Non
                 probs_sw = _score_one_som(vlm, proc, src_sw, trg_sw, cur_prompt, cur_toks)
                 probs = 0.5 * (probs + probs_sw[::-1])
 
+            if k_cur == top_k:
+                prob_sum += probs
             scores = np.array([p["score"] for p in cand], dtype=np.float64) + alpha * probs
             best_idx = int(np.argmax(scores))
             if best_idx != 0:
@@ -281,10 +285,12 @@ def rerank_predictions(dataset, pred_xys, peaks_list, cfg, model=None, cache=Non
     if model is not None and orig_device is not None and orig_device.type != "cpu":
         model.to(orig_device)
 
+    mean_probs = (prob_sum / max(len(ambig_indices), 1)).round(3).tolist()
     stats["vlm_flipped"] = n_flipped
+    stats["vlm_mean_probs"] = mean_probs
     if verbose:
         print(
             f"[VLM rerank] Done: scored {len(ambig_indices)}/{len(pred_xys)} ambiguous queries, "
-            f"flipped {n_flipped} predictions."
+            f"flipped {n_flipped} predictions (mean P_vlm={mean_probs})."
         )
     return updated, stats
